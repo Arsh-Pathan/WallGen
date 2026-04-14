@@ -301,6 +301,7 @@ const rejectedImageKeywords = [
 ];
 
 let wallpaperPoolFillPromise = null;
+let wallpaperPoolTargetSize = 0;
 const categoryMembersCache = new Map();
 let quotesCache = null;
 const recentSceneUrls = [];
@@ -825,10 +826,8 @@ function getClientState(clientId) {
   return nextState;
 }
 
-async function ensureWallpaperPool(targetSize = SERVER_WALLPAPER_POOL_SIZE) {
-  if (wallpaperPool.length >= targetSize) {
-    return wallpaperPool;
-  }
+function startWallpaperPoolFill(targetSize = SERVER_WALLPAPER_POOL_SIZE) {
+  wallpaperPoolTargetSize = Math.max(wallpaperPoolTargetSize, targetSize);
 
   if (wallpaperPoolFillPromise) {
     return wallpaperPoolFillPromise;
@@ -837,9 +836,9 @@ async function ensureWallpaperPool(targetSize = SERVER_WALLPAPER_POOL_SIZE) {
   wallpaperPoolFillPromise = (async () => {
     const knownWallpaperIds = new Set(wallpaperPool.map((entry) => entry.wallpaperId));
     let attempts = 0;
-    const maxAttempts = targetSize * 12;
+    const maxAttempts = Math.max(SERVER_WALLPAPER_POOL_SIZE, wallpaperPoolTargetSize) * 12;
 
-    while (wallpaperPool.length < targetSize && attempts < maxAttempts) {
+    while (wallpaperPool.length < wallpaperPoolTargetSize && attempts < maxAttempts) {
       attempts += 1;
 
       try {
@@ -868,8 +867,27 @@ async function ensureWallpaperPool(targetSize = SERVER_WALLPAPER_POOL_SIZE) {
   return wallpaperPoolFillPromise;
 }
 
+async function ensureWallpaperPoolMinimum(requiredCount = 1) {
+  if (wallpaperPool.length >= requiredCount) {
+    return wallpaperPool;
+  }
+
+  await startWallpaperPoolFill(requiredCount);
+  return wallpaperPool;
+}
+
+function warmWallpaperPool(targetSize = SERVER_WALLPAPER_POOL_SIZE) {
+  startWallpaperPoolFill(targetSize).catch((error) => {
+    console.error("WallGen pool warmup failed:", error.message);
+  });
+}
+
 async function getFeaturedWallpaper() {
-  const pool = await ensureWallpaperPool();
+  const pool = await ensureWallpaperPoolMinimum(1);
+
+  if (wallpaperPool.length < SERVER_WALLPAPER_POOL_SIZE) {
+    warmWallpaperPool();
+  }
 
   if (pool.length > 0) {
     return pool[0];
@@ -884,7 +902,7 @@ async function getWallpaperBatchForClient(clientId, count = CLIENT_WALLPAPER_BAT
     CLIENT_WALLPAPER_BATCH_SIZE,
     Math.max(1, Number.parseInt(String(count), 10) || CLIENT_WALLPAPER_BATCH_SIZE)
   );
-  const pool = await ensureWallpaperPool();
+  const pool = await ensureWallpaperPoolMinimum(normalizedCount);
 
   if (!pool.length) {
     return [normalizeWallpaperEntry(buildFallbackWallpaperPayload())];
@@ -919,7 +937,7 @@ async function getWallpaperBatchForClient(clientId, count = CLIENT_WALLPAPER_BAT
   clientState.lastServedAt = Date.now();
 
   if (wallpaperPool.length < SERVER_WALLPAPER_POOL_SIZE) {
-    ensureWallpaperPool().catch(() => {});
+    warmWallpaperPool();
   }
 
   return selectedWallpapers;
@@ -1092,7 +1110,5 @@ const server = http.createServer((request, response) => {
 
 server.listen(PORT, () => {
   console.log(`WallGen running on http://localhost:${PORT}`);
-  ensureWallpaperPool().catch((error) => {
-    console.error("WallGen initial pool warmup failed:", error.message);
-  });
+  warmWallpaperPool();
 });

@@ -147,9 +147,9 @@ function buildWallpaperBatchUrl(count) {
 }
 
 async function prepareWallpaperEntry(payload) {
-  await preloadImage(payload.scene.image);
   const quoteFontFamily = pickRandomQuoteFont();
-  await ensureQuoteFontLoaded(quoteFontFamily);
+  ensureQuoteFontLoaded(quoteFontFamily).catch(() => {});
+  await preloadImage(payload.scene.image);
 
   return {
     payload,
@@ -244,7 +244,7 @@ function appendPreparedWallpapers(entries) {
   persistWallpaperState();
 }
 
-async function fetchPreparedWallpaperBatch(count) {
+async function fetchWallpaperBatchPayloads(count) {
   const response = await fetch(buildWallpaperBatchUrl(count), { cache: "no-store" });
 
   if (!response.ok) {
@@ -266,28 +266,26 @@ async function fetchPreparedWallpaperBatch(count) {
     throw new Error("Wallpaper batch response did not contain wallpaper items");
   }
 
-  return Promise.all(payloads.map((payload) => prepareWallpaperEntry(payload)));
+  return payloads;
 }
 
-function refillWallpaperQueue(targetCount = clientBatchSize) {
+function queueWallpaperPayloads(payloads) {
+  return Promise.all(payloads.map((payload) => prepareWallpaperEntry(payload))).then(
+    (preparedEntries) => {
+      appendPreparedWallpapers(preparedEntries);
+      return preparedEntries;
+    }
+  );
+}
+
+function refillWallpaperQueue(requestCount = clientBatchSize) {
   if (queueFillPromise) {
     return queueFillPromise;
   }
 
   queueFillPromise = (async () => {
-    while (wallpaperQueue.length < targetCount) {
-      const missingCount = targetCount - wallpaperQueue.length;
-      const preparedEntries = await fetchPreparedWallpaperBatch(missingCount);
-      const queueLengthBeforeAppend = wallpaperQueue.length;
-
-      appendPreparedWallpapers(preparedEntries);
-
-      if (wallpaperQueue.length === queueLengthBeforeAppend) {
-        break;
-      }
-    }
-
-    return wallpaperQueue;
+    const payloads = await fetchWallpaperBatchPayloads(requestCount);
+    return queueWallpaperPayloads(payloads);
   })().finally(() => {
     queueFillPromise = null;
   });
@@ -332,11 +330,30 @@ async function loadWallpaper(forceFresh) {
         persistWallpaperState();
       }
 
+      if (!entry && queueFillPromise) {
+        await queueFillPromise.catch(() => {});
+
+        if (wallpaperQueue.length > 0) {
+          entry = wallpaperQueue.shift() || null;
+          persistWallpaperState();
+        }
+      }
+
       if (!entry) {
-        const preparedEntries = await fetchPreparedWallpaperBatch(clientBatchSize);
-        appendPreparedWallpapers(preparedEntries);
-        entry = wallpaperQueue.shift() || null;
-        persistWallpaperState();
+        const payloads = await fetchWallpaperBatchPayloads(clientBatchSize);
+        const [firstPayload, ...remainingPayloads] = payloads;
+
+        if (!firstPayload) {
+          throw new Error("Wallpaper batch response was empty");
+        }
+
+        if (remainingPayloads.length > 0) {
+          queueFillPromise = queueWallpaperPayloads(remainingPayloads).finally(() => {
+            queueFillPromise = null;
+          });
+        }
+
+        entry = await prepareWallpaperEntry(firstPayload);
       }
 
       if (!entry) {
@@ -347,7 +364,7 @@ async function loadWallpaper(forceFresh) {
       applyWallpaper(entry.payload, entry.quoteFontFamily);
 
       if (wallpaperQueue.length <= clientRefillThreshold) {
-        refillWallpaperQueue(wallpaperQueue.length + clientBatchSize).catch(() => {});
+        refillWallpaperQueue(clientBatchSize).catch(() => {});
       }
     } catch (error) {
       quoteText.textContent = "Unable to load a wallpaper right now.";
@@ -383,12 +400,10 @@ window.addEventListener("pointermove", (event) => {
   const x = (event.clientX / window.innerWidth - 0.5) * 42;
   const y = (event.clientY / window.innerHeight - 0.5) * 42;
   backdropImage.style.transform = `scale(1.14) translate3d(${x * -1.35}px, ${y * -1.35}px, 0)`;
-  headlinePanel.style.transform = `translate3d(${x * 0.28}px, ${y * 0.28}px, 0)`;
 });
 
 window.addEventListener("pointerleave", () => {
   backdropImage.style.transform = "scale(1.12)";
-  headlinePanel.style.transform = "translate3d(0, 0, 0)";
 });
 
 document.addEventListener("selectstart", (event) => {
