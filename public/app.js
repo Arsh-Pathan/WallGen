@@ -6,19 +6,99 @@ const headlinePanel = document.getElementById("headlinePanel");
 let refreshTimeout = null;
 let refreshClickCount = 0;
 let refreshClickTimer = null;
-const quoteFonts = [
-  '"Cormorant Garamond", serif',
-  '"DM Serif Display", serif',
-  '"Playfair Display", serif',
-  '"Libre Baskerville", serif',
-  '"Bodoni Moda", serif',
-  '"Cinzel", serif',
-  '"Prata", serif',
-  '"Lora", serif'
+let activeQuoteFont = "";
+
+const quoteFontCatalog = [
+  "Alegreya",
+  "Alice",
+  "Amarante",
+  "Arbutus Slab",
+  "Baskervville",
+  "Bellefair",
+  "Bitter",
+  "Bodoni Moda",
+  "Brygada 1918",
+  "Cardo",
+  "Cinzel",
+  "Cormorant Garamond",
+  "Cormorant Infant",
+  "Cormorant Unicase",
+  "DM Serif Display",
+  "Domine",
+  "EB Garamond",
+  "Forum",
+  "Fraunces",
+  "Gelasio",
+  "IM Fell English SC",
+  "Instrument Serif",
+  "Libre Baskerville",
+  "Literata",
+  "Lora",
+  "Marcellus",
+  "Merriweather",
+  "Newsreader",
+  "Old Standard TT",
+  "Playfair Display",
+  "Prata",
+  "Rosarivo",
+  "Spectral",
+  "Tinos",
+  "Unna",
+  "Vollkorn",
+  "Yrsa",
+  "Zilla Slab"
 ];
 
-function pickRandomFont() {
-  return quoteFonts[Math.floor(Math.random() * quoteFonts.length)];
+const quoteFontLoaders = new Map();
+
+function buildGoogleFontHref(fontFamily) {
+  const fontFamilySlug = fontFamily.trim().split(/\s+/).join("+");
+  return `https://fonts.googleapis.com/css2?family=${fontFamilySlug}:wght@400;500;600;700&display=swap`;
+}
+
+function pickRandomQuoteFont() {
+  if (quoteFontCatalog.length < 2) {
+    return quoteFontCatalog[0] || "Georgia";
+  }
+
+  let fontFamily = activeQuoteFont;
+
+  while (fontFamily === activeQuoteFont) {
+    fontFamily = quoteFontCatalog[Math.floor(Math.random() * quoteFontCatalog.length)];
+  }
+
+  return fontFamily;
+}
+
+function ensureQuoteFontLoaded(fontFamily) {
+  if (quoteFontLoaders.has(fontFamily)) {
+    return quoteFontLoaders.get(fontFamily);
+  }
+
+  const loader = new Promise((resolve) => {
+    const stylesheet = document.createElement("link");
+    stylesheet.rel = "stylesheet";
+    stylesheet.href = buildGoogleFontHref(fontFamily);
+
+    const finish = () => {
+      if (!document.fonts || typeof document.fonts.load !== "function") {
+        resolve();
+        return;
+      }
+
+      Promise.race([
+        document.fonts.load(`500 1em "${fontFamily}"`),
+        new Promise((timeoutResolve) => window.setTimeout(timeoutResolve, 1800))
+      ]).finally(resolve);
+    };
+
+    stylesheet.onload = finish;
+    stylesheet.onerror = resolve;
+    document.head.append(stylesheet);
+  });
+
+  quoteFontLoaders.set(fontFamily, loader);
+  return loader;
 }
 
 function preloadImage(url) {
@@ -30,10 +110,10 @@ function preloadImage(url) {
   });
 }
 
-function applyWallpaper(payload) {
+function applyWallpaper(payload, quoteFontFamily) {
   quoteText.textContent = payload.quote.text;
   quoteAuthor.textContent = `- ${payload.quote.author}`;
-  document.documentElement.style.setProperty("--quote-font", pickRandomFont());
+  document.documentElement.style.setProperty("--quote-font", `"${quoteFontFamily}", serif`);
   backdropImage.style.backgroundImage = `url("${payload.scene.image}")`;
   backdropImage.setAttribute("aria-label", payload.scene.alt);
   scheduleAutoRefresh(payload.nextRefreshAt);
@@ -64,7 +144,10 @@ async function loadWallpaper(forceFresh) {
 
     const payload = await response.json();
     await preloadImage(payload.scene.image);
-    applyWallpaper(payload);
+    const quoteFontFamily = pickRandomQuoteFont();
+    await ensureQuoteFontLoaded(quoteFontFamily);
+    activeQuoteFont = quoteFontFamily;
+    applyWallpaper(payload, quoteFontFamily);
     requestAnimationFrame(() => {
       document.body.classList.remove("is-switching");
     });

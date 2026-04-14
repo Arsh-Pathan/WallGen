@@ -1,7 +1,7 @@
 :root {
   --text-main: #f6f3eb;
   --text-muted: rgba(246, 243, 235, 0.74);
-  --quote-font: "Cormorant Garamond", serif;
+  --quote-font: Georgia, serif;
   --author-font: "Manrope", sans-serif;
 }
 
@@ -20,6 +20,8 @@ body {
   background: #050607;
   color: var(--text-main);
   font-family: var(--author-font);
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .app-shell,

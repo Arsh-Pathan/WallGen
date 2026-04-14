@@ -8,6 +8,7 @@ The frontend stays intentionally simple:
 - one centered quote
 - a stronger mouse-move parallax effect
 - random Google Font selection on wallpaper changes
+- on-demand random quote font loading from a broader Google Fonts catalog
 - fade-out / fade-in transitions between wallpapers
 
 ## Features
