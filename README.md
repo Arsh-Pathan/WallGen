@@ -26,6 +26,7 @@ The frontend stays intentionally simple:
 - 3-hour wallpaper cache for normal viewing
 - `Ctrl+N` to force a fresh wallpaper immediately
 - `Ctrl+R` supported with a fresh reload request
+- triple-click anywhere to force a fresh wallpaper immediately
 - Recent-image memory to reduce immediate repeats
 - Docker support for deployment platforms such as `code-host.online`
 
@@ -73,6 +74,7 @@ http://localhost:3000
 
 - `Ctrl+N`: fetch a new wallpaper and quote immediately
 - `Ctrl+R`: reload the page and request a fresh wallpaper
+- Triple-click: fetch a new wallpaper and quote immediately
 
 ## How It Works
 

@@ -4,6 +4,8 @@ const quoteAuthor = document.getElementById("quoteAuthor");
 const headlinePanel = document.getElementById("headlinePanel");
 
 let refreshTimeout = null;
+let refreshClickCount = 0;
+let refreshClickTimer = null;
 const quoteFonts = [
   '"Cormorant Garamond", serif',
   '"DM Serif Display", serif',
@@ -78,6 +80,26 @@ function requestFreshWallpaper() {
   loadWallpaper(true);
 }
 
+function registerRefreshClick() {
+  refreshClickCount += 1;
+
+  if (refreshClickTimer) {
+    window.clearTimeout(refreshClickTimer);
+  }
+
+  if (refreshClickCount >= 3) {
+    refreshClickCount = 0;
+    refreshClickTimer = null;
+    requestFreshWallpaper();
+    return;
+  }
+
+  refreshClickTimer = window.setTimeout(() => {
+    refreshClickCount = 0;
+    refreshClickTimer = null;
+  }, 550);
+}
+
 window.addEventListener("pointermove", (event) => {
   const x = (event.clientX / window.innerWidth - 0.5) * 42;
   const y = (event.clientY / window.innerHeight - 0.5) * 42;
@@ -88,6 +110,14 @@ window.addEventListener("pointermove", (event) => {
 window.addEventListener("pointerleave", () => {
   backdropImage.style.transform = "scale(1.12)";
   headlinePanel.style.transform = "translate3d(0, 0, 0)";
+});
+
+window.addEventListener("click", (event) => {
+  if (event.button !== 0) {
+    return;
+  }
+
+  registerRefreshClick();
 });
 
 window.addEventListener("keydown", (event) => {
