@@ -1,0 +1,7 @@
+node_modules/
+.env
+.env.*
+wallgen.out.log
+wallgen.err.log
+npm-debug.log*
+dist/
