@@ -34,6 +34,7 @@ const imageThemes = [
       "Category:Astronomy photographs",
       "Category:Galaxies",
       "Category:Nebulae",
+      "Category:Planets",
       "Category:Night sky photographs",
       "Category:Moon photographs"
     ]
@@ -102,6 +103,28 @@ const imageThemes = [
       "Category:Bridge photographs",
       "Category:Tower photographs",
       "Category:Interior photographs"
+    ]
+  },
+  {
+    label: "Deserts",
+    mood: "desert expanse",
+    categories: [
+      "Category:Desert photographs",
+      "Category:Dune photographs",
+      "Category:Canyon photographs",
+      "Category:Rock formations",
+      "Category:Arid landscapes"
+    ]
+  },
+  {
+    label: "Seasons",
+    mood: "seasonal atmosphere",
+    categories: [
+      "Category:Autumn photographs",
+      "Category:Winter photographs",
+      "Category:Spring photographs",
+      "Category:Snow landscapes",
+      "Category:Trees in autumn"
     ]
   }
 ];
@@ -280,7 +303,9 @@ let generationSlotKey = null;
 const categoryMembersCache = new Map();
 let quotesCache = null;
 const recentSceneUrls = [];
+const recentThemeLabels = [];
 const MAX_RECENT_SCENES = 12;
+const MAX_RECENT_THEMES = 4;
 
 const contentTypes = {
   ".css": "text/css; charset=utf-8",
@@ -500,6 +525,24 @@ function rememberSceneUrl(url) {
   }
 }
 
+function rememberThemeLabel(label) {
+  if (!label) {
+    return;
+  }
+
+  const existingIndex = recentThemeLabels.indexOf(label);
+
+  if (existingIndex >= 0) {
+    recentThemeLabels.splice(existingIndex, 1);
+  }
+
+  recentThemeLabels.unshift(label);
+
+  if (recentThemeLabels.length > MAX_RECENT_THEMES) {
+    recentThemeLabels.length = MAX_RECENT_THEMES;
+  }
+}
+
 async function fetchCategoryMembers(category) {
   const cached = categoryMembersCache.get(category);
 
@@ -534,11 +577,15 @@ async function fetchLiveImage(slotKey, selectionSeed = String(slotKey)) {
     }))
     .sort((left, right) => left.score - right.score)
     .map((entry) => entry.theme);
+  const preferredThemes = orderedThemes.filter((theme) => !recentThemeLabels.includes(theme.label));
+  const themePool = preferredThemes.length
+    ? preferredThemes.concat(orderedThemes.filter((theme) => recentThemeLabels.includes(theme.label)))
+    : orderedThemes;
 
   let lastError = null;
   let fallbackScene = null;
 
-  for (const theme of orderedThemes) {
+  for (const theme of themePool) {
     const orderedCategories = theme.categories
       .map((category, index) => ({
         category,
@@ -590,12 +637,14 @@ async function fetchLiveImage(slotKey, selectionSeed = String(slotKey)) {
           image: info.thumburl || info.url,
           alt: `${theme.label} image from Wikimedia Commons`,
           mood: `${theme.mood} from ${theme.label.toLowerCase()}`,
+          themeLabel: theme.label,
           credit: "Wikimedia Commons",
           sourceUrl
         };
 
         if (!recentSceneUrls.includes(scene.image)) {
           rememberSceneUrl(scene.image);
+          rememberThemeLabel(theme.label);
           return scene;
         }
 
@@ -610,6 +659,7 @@ async function fetchLiveImage(slotKey, selectionSeed = String(slotKey)) {
 
   if (fallbackScene) {
     rememberSceneUrl(fallbackScene.image);
+    rememberThemeLabel(fallbackScene.themeLabel);
     return fallbackScene;
   }
 
@@ -763,6 +813,25 @@ async function getCurrentWallpaper(forceRefresh = false, refreshNonce = "") {
   return generationPromise;
 }
 
+async function getWallpaperBatch(count = 5, forceRefresh = false, refreshNonce = "") {
+  const normalizedCount = Math.min(8, Math.max(1, Number.parseInt(String(count), 10) || 1));
+  const now = Date.now();
+  const slotKey = Math.floor(now / SLOT_DURATION_MS);
+  const batchNonce = refreshNonce || String(now);
+  const payloads = [];
+
+  for (let index = 0; index < normalizedCount; index += 1) {
+    if (!forceRefresh && index === 0) {
+      payloads.push(await getCurrentWallpaper(false, ""));
+      continue;
+    }
+
+    payloads.push(await buildWallpaperPayload(now, `${slotKey}:${batchNonce}:batch:${index}`));
+  }
+
+  return payloads;
+}
+
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
@@ -847,6 +916,23 @@ const server = http.createServer((request, response) => {
     getCurrentWallpaper(forceRefresh, refreshNonce)
       .then((payload) => {
         sendJson(response, 200, payload);
+      })
+      .catch((error) => {
+        sendJson(response, 500, { error: error.message });
+      });
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/wallpaper-batch") {
+    const forceRefresh =
+      requestUrl.searchParams.get("refresh") === "1" ||
+      requestUrl.searchParams.has("nonce");
+    const refreshNonce = requestUrl.searchParams.get("nonce") || "";
+    const count = requestUrl.searchParams.get("count") || "5";
+
+    getWallpaperBatch(count, forceRefresh, refreshNonce)
+      .then((payloads) => {
+        sendJson(response, 200, payloads);
       })
       .catch((error) => {
         sendJson(response, 500, { error: error.message });
