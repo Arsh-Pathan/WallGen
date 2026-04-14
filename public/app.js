@@ -4,8 +4,6 @@ const quoteAuthor = document.getElementById("quoteAuthor");
 const headlinePanel = document.getElementById("headlinePanel");
 
 let refreshTimeout = null;
-let refreshClickCount = 0;
-let refreshClickTimer = null;
 let activeQuoteFont = "";
 
 const quoteFontCatalog = [
@@ -163,24 +161,14 @@ function requestFreshWallpaper() {
   loadWallpaper(true);
 }
 
-function registerRefreshClick() {
-  refreshClickCount += 1;
-
-  if (refreshClickTimer) {
-    window.clearTimeout(refreshClickTimer);
-  }
-
-  if (refreshClickCount >= 3) {
-    refreshClickCount = 0;
-    refreshClickTimer = null;
-    requestFreshWallpaper();
-    return;
-  }
-
-  refreshClickTimer = window.setTimeout(() => {
-    refreshClickCount = 0;
-    refreshClickTimer = null;
-  }, 550);
+function isEditableTarget(target) {
+  return (
+    target instanceof HTMLElement &&
+    (target.isContentEditable ||
+      target.tagName === "INPUT" ||
+      target.tagName === "TEXTAREA" ||
+      target.tagName === "SELECT")
+  );
 }
 
 window.addEventListener("pointermove", (event) => {
@@ -195,15 +183,27 @@ window.addEventListener("pointerleave", () => {
   headlinePanel.style.transform = "translate3d(0, 0, 0)";
 });
 
-window.addEventListener("click", (event) => {
-  if (event.button !== 0) {
+document.addEventListener("selectstart", (event) => {
+  if (isEditableTarget(event.target)) {
     return;
   }
 
-  registerRefreshClick();
+  event.preventDefault();
+});
+
+document.addEventListener("dragstart", (event) => {
+  if (isEditableTarget(event.target)) {
+    return;
+  }
+
+  event.preventDefault();
 });
 
 window.addEventListener("keydown", (event) => {
+  if (isEditableTarget(event.target)) {
+    return;
+  }
+
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "r") {
     sessionStorage.setItem("wallgen-force-refresh", "1");
   }
@@ -211,6 +211,16 @@ window.addEventListener("keydown", (event) => {
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") {
     event.preventDefault();
     requestFreshWallpaper();
+    return;
+  }
+
+  if (!event.ctrlKey && !event.metaKey && !event.altKey) {
+    const key = event.key.toLowerCase();
+
+    if (key === "n" || key === " ") {
+      event.preventDefault();
+      requestFreshWallpaper();
+    }
   }
 });
 

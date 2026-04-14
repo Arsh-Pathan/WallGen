@@ -31,9 +31,9 @@ The frontend stays intentionally simple:
   - abstract
 - Live quote fetching from ZenQuotes
 - 30-minute wallpaper cache for normal viewing
+- `N` or `Space` to force a fresh wallpaper immediately
 - `Ctrl+N` to force a fresh wallpaper immediately
 - `Ctrl+R` supported with a fresh reload request
-- triple-click anywhere to force a fresh wallpaper immediately
 - Recent-image memory to reduce immediate repeats
 - Docker support for deployment platforms such as `code-host.online`
 
@@ -80,8 +80,8 @@ http://localhost:3000
 ## Shortcuts
 
 - `Ctrl+N`: fetch a new wallpaper and quote immediately
+- `N` or `Space`: fetch a new wallpaper and quote immediately
 - `Ctrl+R`: reload the page and request a fresh wallpaper
-- Triple-click: fetch a new wallpaper and quote immediately
 
 ## How It Works
 

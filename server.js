@@ -5,6 +5,7 @@ const path = require("path");
 
 const PORT = Number(process.env.PORT) || 3000;
 const SLOT_DURATION_MS = 30 * 60 * 1000;
+const SLOT_DURATION_MINUTES = SLOT_DURATION_MS / (60 * 1000);
 const PUBLIC_DIR = path.join(__dirname, "public");
 const CATEGORY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const QUOTE_CACHE_TTL_MS = 30 * 60 * 1000;
@@ -209,6 +210,60 @@ const interactionModes = [
   }
 ];
 
+const rejectedImageKeywords = [
+  "advertisement",
+  "album cover",
+  "banner",
+  "barcode",
+  "book cover",
+  "calendar",
+  "certificate",
+  "chart",
+  "coat of arms",
+  "collage",
+  "comic",
+  "cover art",
+  "data sheet",
+  "diagram",
+  "document",
+  "drawing",
+  "equation",
+  "flag",
+  "flyer",
+  "form",
+  "formula",
+  "graph",
+  "histogram",
+  "icon",
+  "illustration",
+  "infographic",
+  "label",
+  "line art",
+  "locator map",
+  "logo",
+  "map",
+  "newspaper",
+  "passport",
+  "plot",
+  "poster",
+  "presentation slide",
+  "scan",
+  "schematic",
+  "scorecard",
+  "screenshot",
+  "seal",
+  "sheet music",
+  "sign",
+  "spectrum",
+  "stamp",
+  "table",
+  "technical drawing",
+  "text",
+  "ticket",
+  "timeline",
+  "typography"
+];
+
 let cachedWallpaper = null;
 let cachedSlotKey = null;
 let generationPromise = null;
@@ -317,6 +372,41 @@ function toSceneName(title, fallbackLabel) {
   return cleaned || fallbackLabel;
 }
 
+function stripHtml(value) {
+  return String(value || "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildImageMetadataText(page) {
+  const info = page && Array.isArray(page.imageinfo) ? page.imageinfo[0] : null;
+  const extmetadata = info?.extmetadata || {};
+
+  return [
+    page?.title,
+    extmetadata.ObjectName?.value,
+    extmetadata.ImageDescription?.value,
+    extmetadata.Categories?.value
+  ]
+    .map(stripHtml)
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function isTextHeavyWikimediaImage(page) {
+  const metadataText = buildImageMetadataText(page);
+
+  if (!metadataText) {
+    return false;
+  }
+
+  return rejectedImageKeywords.some((keyword) => metadataText.includes(keyword));
+}
+
 function isUsableWikimediaImage(page) {
   const info = page && Array.isArray(page.imageinfo) ? page.imageinfo[0] : null;
 
@@ -333,6 +423,10 @@ function isUsableWikimediaImage(page) {
   }
 
   if (info.width < 1400 || info.width < info.height) {
+    return false;
+  }
+
+  if (isTextHeavyWikimediaImage(page)) {
     return false;
   }
 
@@ -423,7 +517,7 @@ async function fetchLiveImage(slotKey, selectionSeed = String(slotKey)) {
           format: "json",
           prop: "imageinfo",
           titles: titleList.join("|"),
-          iiprop: "url|size|mime",
+          iiprop: "url|size|mime|extmetadata",
           iiurlwidth: 2200
         });
         const detailsData = await fetchJson(detailsUrl);
@@ -528,7 +622,8 @@ function buildFallbackWallpaperPayload(now = Date.now(), selectionSeed = String(
     generatedAt: new Date(now).toISOString(),
     slotStart: new Date(slotStart).toISOString(),
     nextRefreshAt: new Date(nextRefreshAt).toISOString(),
-    durationHours: 3,
+    durationHours: SLOT_DURATION_MS / (60 * 60 * 1000),
+    durationMinutes: SLOT_DURATION_MINUTES,
     scene,
     quote,
     palette,
@@ -577,7 +672,8 @@ async function buildWallpaperPayload(now = Date.now(), selectionSeed = String(no
     generatedAt: new Date(now).toISOString(),
     slotStart: new Date(slotStart).toISOString(),
     nextRefreshAt: new Date(nextRefreshAt).toISOString(),
-    durationHours: 3,
+    durationHours: SLOT_DURATION_MS / (60 * 60 * 1000),
+    durationMinutes: SLOT_DURATION_MINUTES,
     scene,
     quote,
     palette,

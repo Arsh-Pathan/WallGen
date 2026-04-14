@@ -7,6 +7,9 @@
 
 * {
   box-sizing: border-box;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 html,
@@ -20,8 +23,10 @@ body {
   background: #050607;
   color: var(--text-main);
   font-family: var(--author-font);
-  user-select: none;
-  -webkit-user-select: none;
+}
+
+img {
+  -webkit-user-drag: none;
 }
 
 .app-shell,
