@@ -4,9 +4,9 @@ WallGen is a minimal wallpaper web app that pulls a live background image and a 
 
 Live site: `https://wallgen.code-host.online/`
 
-## Current Live Wallpaper
+## Current Live Preview
 
-![Current live WallGen wallpaper](https://wallgen.code-host.online/api/current-wallpaper-image)
+![Current live WallGen preview](https://wallgen.code-host.online/api/current-wallpaper-preview.svg)
 
 The frontend stays intentionally simple:
 
@@ -91,6 +91,7 @@ The backend exposes:
 - `GET /api/health`
 - `GET /api/wallpaper`
 - `GET /api/current-wallpaper-image`
+- `GET /api/current-wallpaper-preview.svg`
 
 `/api/wallpaper`:
 

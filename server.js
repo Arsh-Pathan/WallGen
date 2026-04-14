@@ -390,6 +390,42 @@ function stripHtml(value) {
     .trim();
 }
 
+function escapeXml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function wrapText(value, maxLineLength) {
+  const words = String(value || "").trim().split(/\s+/).filter(Boolean);
+
+  if (!words.length) {
+    return [];
+  }
+
+  const lines = [];
+  let currentLine = words[0];
+
+  for (let index = 1; index < words.length; index += 1) {
+    const nextWord = words[index];
+    const candidate = `${currentLine} ${nextWord}`;
+
+    if (candidate.length <= maxLineLength) {
+      currentLine = candidate;
+      continue;
+    }
+
+    lines.push(currentLine);
+    currentLine = nextWord;
+  }
+
+  lines.push(currentLine);
+  return lines;
+}
+
 function buildImageMetadataText(page) {
   const info = page && Array.isArray(page.imageinfo) ? page.imageinfo[0] : null;
   const extmetadata = info?.extmetadata || {};
@@ -735,6 +771,14 @@ function sendJson(response, statusCode, payload) {
   response.end(JSON.stringify(payload));
 }
 
+function sendSvg(response, statusCode, svgMarkup) {
+  response.writeHead(statusCode, {
+    "Content-Type": "image/svg+xml; charset=utf-8",
+    "Cache-Control": "no-store"
+  });
+  response.end(svgMarkup);
+}
+
 function redirect(response, statusCode, location) {
   response.writeHead(statusCode, {
     Location: location,
@@ -761,6 +805,34 @@ function sendFile(response, targetPath) {
     });
     response.end(content);
   });
+}
+
+function buildWallpaperPreviewSvg(payload) {
+  const quoteLines = wrapText(payload?.quote?.text || "", 34).slice(0, 4);
+  const quoteMarkup = quoteLines
+    .map((line, index) => {
+      const dy = index === 0 ? "0" : "70";
+      return `<tspan x="800" dy="${dy}">${escapeXml(line)}</tspan>`;
+    })
+    .join("");
+  const authorMarkup = escapeXml(payload?.quote?.author || "");
+  const imageUrl = escapeXml(payload?.scene?.image || "");
+  const sceneAlt = escapeXml(payload?.scene?.alt || "WallGen live preview");
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-label="${sceneAlt}">
+  <defs>
+    <linearGradient id="wallgenOverlay" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#060a10" stop-opacity="0.12" />
+      <stop offset="100%" stop-color="#05070a" stop-opacity="0.72" />
+    </linearGradient>
+  </defs>
+  <image href="${imageUrl}" x="0" y="0" width="1600" height="900" preserveAspectRatio="xMidYMid slice" />
+  <rect x="0" y="0" width="1600" height="900" fill="url(#wallgenOverlay)" />
+  <rect x="180" y="190" width="1240" height="520" rx="28" fill="#000000" fill-opacity="0.18" />
+  <text x="800" y="390" fill="#fff8ec" font-size="58" font-family="Georgia, serif" text-anchor="middle">${quoteMarkup}</text>
+  <text x="800" y="610" fill="#f6f3eb" fill-opacity="0.82" font-size="22" font-family="Manrope, Arial, sans-serif" letter-spacing="5" text-anchor="middle">- ${authorMarkup}</text>
+</svg>`;
 }
 
 const server = http.createServer((request, response) => {
@@ -796,6 +868,22 @@ const server = http.createServer((request, response) => {
     getCurrentWallpaper(forceRefresh, refreshNonce)
       .then((payload) => {
         redirect(response, 302, payload.scene.image);
+      })
+      .catch((error) => {
+        sendJson(response, 500, { error: error.message });
+      });
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/current-wallpaper-preview.svg") {
+    const forceRefresh =
+      requestUrl.searchParams.get("refresh") === "1" ||
+      requestUrl.searchParams.has("nonce");
+    const refreshNonce = requestUrl.searchParams.get("nonce") || "";
+
+    getCurrentWallpaper(forceRefresh, refreshNonce)
+      .then((payload) => {
+        sendSvg(response, 200, buildWallpaperPreviewSvg(payload));
       })
       .catch((error) => {
         sendJson(response, 500, { error: error.message });
