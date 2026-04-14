@@ -32,7 +32,9 @@ The frontend stays intentionally simple:
   - seasonal scenery
 - High-definition landscape filtering for background use
 - Rejection of dashboard-like images, charts, maps, UI graphics, and text-heavy artwork
-- Five preloaded wallpapers kept ready for instant manual switching
+- Client keeps a local wallpaper queue for instant manual switching
+- Client requests `10` wallpapers at a time and refills when only `5` remain
+- Server keeps a ready pool of `50` wallpapers for fast delivery
 - Live quote fetching from ZenQuotes
 - 30-minute wallpaper cache for normal viewing
 - Double-click anywhere to force a fresh wallpaper immediately
@@ -89,16 +91,17 @@ The backend exposes:
 
 - `GET /api/health`
 - `GET /api/wallpaper`
-- `GET /api/wallpaper-batch`
+- `GET /api/wallpapers`
 - `GET /api/current-wallpaper-image`
 - `GET /api/current-wallpaper-preview.svg`
 
-`/api/wallpaper`:
+`/api/wallpapers`:
 
 - pulls image candidates from Wikimedia Commons categories
 - pulls quote batches from ZenQuotes
-- caches external results to reduce API pressure
-- keeps a short recent-image memory to avoid showing the same image again right away
+- keeps a ready server-side pool of `50` wallpaper+quote pairs
+- returns `10` items at a time to each client
+- tracks which wallpaper images each client has already received to reduce repeats
 - falls back gracefully if a live source is unavailable
 
 ## Docker

@@ -3,7 +3,10 @@ const quoteText = document.getElementById("quoteText");
 const quoteAuthor = document.getElementById("quoteAuthor");
 const headlinePanel = document.getElementById("headlinePanel");
 
-const PRELOADED_WALLPAPER_COUNT = 5;
+const CLIENT_WALLPAPER_BATCH_SIZE = 10;
+const CLIENT_WALLPAPER_REFILL_THRESHOLD = 5;
+const AUTO_ROTATE_INTERVAL_MS = 30 * 60 * 1000;
+const WALLGEN_CLIENT_ID_KEY = "wallgen-client-id";
 const WALLGEN_CURRENT_ENTRY_KEY = "wallgen-current-entry";
 const WALLGEN_QUEUE_KEY = "wallgen-wallpaper-queue";
 let refreshTimeout = null;
@@ -13,6 +16,8 @@ let queueFillPromise = null;
 let wallpaperLoadPromise = null;
 let activeWallpaperUrl = "";
 let activeWallpaperEntry = null;
+let clientBatchSize = CLIENT_WALLPAPER_BATCH_SIZE;
+let clientRefillThreshold = CLIENT_WALLPAPER_REFILL_THRESHOLD;
 
 const quoteFontCatalog = [
   "Alegreya",
@@ -56,6 +61,26 @@ const quoteFontCatalog = [
 ];
 
 const quoteFontLoaders = new Map();
+
+function getClientId() {
+  try {
+    const existingClientId = window.localStorage.getItem(WALLGEN_CLIENT_ID_KEY);
+
+    if (existingClientId) {
+      return existingClientId;
+    }
+
+    const nextClientId =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `wallgen-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    window.localStorage.setItem(WALLGEN_CLIENT_ID_KEY, nextClientId);
+    return nextClientId;
+  } catch {
+    return "wallgen-anonymous-client";
+  }
+}
 
 function buildGoogleFontHref(fontFamily) {
   const fontFamilySlug = fontFamily.trim().split(/\s+/).join("+");
@@ -116,18 +141,9 @@ function preloadImage(url) {
   });
 }
 
-function buildWallpaperUrl(forceFresh, nonce) {
-  if (!forceFresh) {
-    return "/api/wallpaper";
-  }
-
-  return `/api/wallpaper?refresh=1&nonce=${nonce || Date.now()}`;
-}
-
 function buildWallpaperBatchUrl(count) {
-  return `/api/wallpaper-batch?count=${count}&refresh=1&nonce=${Date.now()}-${Math.random()
-    .toString(36)
-    .slice(2)}`;
+  const clientId = encodeURIComponent(getClientId());
+  return `/api/wallpapers?clientId=${clientId}&count=${count}`;
 }
 
 async function prepareWallpaperEntry(payload) {
@@ -228,17 +244,6 @@ function appendPreparedWallpapers(entries) {
   persistWallpaperState();
 }
 
-async function fetchPreparedWallpaper(forceFresh) {
-  const response = await fetch(buildWallpaperUrl(forceFresh, Date.now()), { cache: "no-store" });
-
-  if (!response.ok) {
-    throw new Error(`Request failed with status ${response.status}`);
-  }
-
-  const payload = await response.json();
-  return prepareWallpaperEntry(payload);
-}
-
 async function fetchPreparedWallpaperBatch(count) {
   const response = await fetch(buildWallpaperBatchUrl(count), { cache: "no-store" });
 
@@ -246,16 +251,25 @@ async function fetchPreparedWallpaperBatch(count) {
     throw new Error(`Request failed with status ${response.status}`);
   }
 
-  const payloads = await response.json();
+  const batchResponse = await response.json();
+  const payloads = Array.isArray(batchResponse) ? batchResponse : batchResponse.items;
+
+  if (typeof batchResponse?.clientBatchSize === "number") {
+    clientBatchSize = batchResponse.clientBatchSize;
+  }
+
+  if (typeof batchResponse?.refillThreshold === "number") {
+    clientRefillThreshold = batchResponse.refillThreshold;
+  }
 
   if (!Array.isArray(payloads)) {
-    throw new Error("Wallpaper batch response was not an array");
+    throw new Error("Wallpaper batch response did not contain wallpaper items");
   }
 
   return Promise.all(payloads.map((payload) => prepareWallpaperEntry(payload)));
 }
 
-function refillWallpaperQueue(targetCount = PRELOADED_WALLPAPER_COUNT) {
+function refillWallpaperQueue(targetCount = clientBatchSize) {
   if (queueFillPromise) {
     return queueFillPromise;
   }
@@ -292,17 +306,16 @@ function applyWallpaper(payload, quoteFontFamily) {
     payload,
     quoteFontFamily
   };
-  scheduleAutoRefresh(payload.nextRefreshAt);
+  scheduleAutoRefresh();
   persistWallpaperState();
 }
 
-function scheduleAutoRefresh(nextRefreshAt) {
+function scheduleAutoRefresh() {
   if (refreshTimeout) {
     window.clearTimeout(refreshTimeout);
   }
 
-  const delay = Math.max(2000, new Date(nextRefreshAt).getTime() - Date.now() + 500);
-  refreshTimeout = window.setTimeout(() => loadWallpaper(false), delay);
+  refreshTimeout = window.setTimeout(() => loadWallpaper(false), AUTO_ROTATE_INTERVAL_MS);
 }
 
 async function loadWallpaper(forceFresh) {
@@ -314,18 +327,28 @@ async function loadWallpaper(forceFresh) {
     try {
       let entry = null;
 
-      if (forceFresh && wallpaperQueue.length > 0) {
+      if (wallpaperQueue.length > 0) {
         entry = wallpaperQueue.shift() || null;
         persistWallpaperState();
       }
 
       if (!entry) {
-        entry = await fetchPreparedWallpaper(forceFresh);
+        const preparedEntries = await fetchPreparedWallpaperBatch(clientBatchSize);
+        appendPreparedWallpapers(preparedEntries);
+        entry = wallpaperQueue.shift() || null;
+        persistWallpaperState();
+      }
+
+      if (!entry) {
+        throw new Error("No wallpaper was available after refilling the local queue");
       }
 
       activeQuoteFont = entry.quoteFontFamily;
       applyWallpaper(entry.payload, entry.quoteFontFamily);
-      refillWallpaperQueue().catch(() => {});
+
+      if (wallpaperQueue.length <= clientRefillThreshold) {
+        refillWallpaperQueue(wallpaperQueue.length + clientBatchSize).catch(() => {});
+      }
     } catch (error) {
       quoteText.textContent = "Unable to load a wallpaper right now.";
       quoteAuthor.textContent = "";
@@ -392,6 +415,9 @@ window.addEventListener("dblclick", (event) => {
   requestFreshWallpaper();
 });
 
-restoreWallpaperState();
-refillWallpaperQueue().catch(() => {});
-loadWallpaper(false);
+const restoredWallpaper = restoreWallpaperState();
+refillWallpaperQueue(clientBatchSize).catch(() => {});
+
+if (!restoredWallpaper) {
+  loadWallpaper(false);
+}

@@ -6,6 +6,10 @@ const path = require("path");
 const PORT = Number(process.env.PORT) || 3000;
 const SLOT_DURATION_MS = 30 * 60 * 1000;
 const SLOT_DURATION_MINUTES = SLOT_DURATION_MS / (60 * 1000);
+const CLIENT_WALLPAPER_BATCH_SIZE = 10;
+const CLIENT_WALLPAPER_REFILL_THRESHOLD = 5;
+const SERVER_WALLPAPER_POOL_SIZE = 50;
+const CLIENT_WALLPAPER_STATE_TTL_MS = 12 * 60 * 60 * 1000;
 const PUBLIC_DIR = path.join(__dirname, "public");
 const CATEGORY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const QUOTE_CACHE_TTL_MS = 30 * 60 * 1000;
@@ -296,14 +300,13 @@ const rejectedImageKeywords = [
   "wireframe"
 ];
 
-let cachedWallpaper = null;
-let cachedSlotKey = null;
-let generationPromise = null;
-let generationSlotKey = null;
+let wallpaperPoolFillPromise = null;
 const categoryMembersCache = new Map();
 let quotesCache = null;
 const recentSceneUrls = [];
 const recentThemeLabels = [];
+const clientWallpaperState = new Map();
+let wallpaperPool = [];
 const MAX_RECENT_SCENES = 12;
 const MAX_RECENT_THEMES = 4;
 
@@ -785,51 +788,141 @@ async function buildWallpaperPayload(now = Date.now(), selectionSeed = String(no
   };
 }
 
-async function getCurrentWallpaper(forceRefresh = false, refreshNonce = "") {
-  const now = Date.now();
-  const slotKey = Math.floor(now / SLOT_DURATION_MS);
-  const selectionSeed = forceRefresh && refreshNonce ? `${slotKey}:${refreshNonce}` : String(slotKey);
-
-  if (!forceRefresh && cachedWallpaper && cachedSlotKey === slotKey) {
-    return cachedWallpaper;
-  }
-
-  if (!forceRefresh && generationPromise && generationSlotKey === slotKey) {
-    return generationPromise;
-  }
-
-  generationSlotKey = slotKey;
-  generationPromise = buildWallpaperPayload(now, selectionSeed)
-    .then((payload) => {
-      cachedSlotKey = slotKey;
-      cachedWallpaper = payload;
-      return payload;
-    })
-    .finally(() => {
-      generationPromise = null;
-      generationSlotKey = null;
-    });
-
-  return generationPromise;
+function getWallpaperId(payload) {
+  return String(hashString(payload.scene.image));
 }
 
-async function getWallpaperBatch(count = 5, forceRefresh = false, refreshNonce = "") {
-  const normalizedCount = Math.min(8, Math.max(1, Number.parseInt(String(count), 10) || 1));
-  const now = Date.now();
-  const slotKey = Math.floor(now / SLOT_DURATION_MS);
-  const batchNonce = refreshNonce || String(now);
-  const payloads = [];
+function normalizeWallpaperEntry(payload) {
+  return {
+    ...payload,
+    wallpaperId: getWallpaperId(payload)
+  };
+}
 
-  for (let index = 0; index < normalizedCount; index += 1) {
-    if (!forceRefresh && index === 0) {
-      payloads.push(await getCurrentWallpaper(false, ""));
-      continue;
+function cleanupClientWallpaperState(now = Date.now()) {
+  for (const [clientId, clientState] of clientWallpaperState.entries()) {
+    if (now - clientState.lastServedAt > CLIENT_WALLPAPER_STATE_TTL_MS) {
+      clientWallpaperState.delete(clientId);
     }
+  }
+}
 
-    payloads.push(await buildWallpaperPayload(now, `${slotKey}:${batchNonce}:batch:${index}`));
+function getClientState(clientId) {
+  const existingState = clientWallpaperState.get(clientId);
+
+  if (existingState) {
+    existingState.lastServedAt = Date.now();
+    return existingState;
   }
 
-  return payloads;
+  const nextState = {
+    requestCount: 0,
+    seenWallpaperIds: new Set(),
+    lastServedAt: Date.now()
+  };
+
+  clientWallpaperState.set(clientId, nextState);
+  return nextState;
+}
+
+async function ensureWallpaperPool(targetSize = SERVER_WALLPAPER_POOL_SIZE) {
+  if (wallpaperPool.length >= targetSize) {
+    return wallpaperPool;
+  }
+
+  if (wallpaperPoolFillPromise) {
+    return wallpaperPoolFillPromise;
+  }
+
+  wallpaperPoolFillPromise = (async () => {
+    const knownWallpaperIds = new Set(wallpaperPool.map((entry) => entry.wallpaperId));
+    let attempts = 0;
+    const maxAttempts = targetSize * 12;
+
+    while (wallpaperPool.length < targetSize && attempts < maxAttempts) {
+      attempts += 1;
+
+      try {
+        const payload = await buildWallpaperPayload(
+          Date.now(),
+          `pool:${wallpaperPool.length}:${attempts}:${Date.now()}:${Math.random()}`
+        );
+        const entry = normalizeWallpaperEntry(payload);
+
+        if (knownWallpaperIds.has(entry.wallpaperId)) {
+          continue;
+        }
+
+        knownWallpaperIds.add(entry.wallpaperId);
+        wallpaperPool.push(entry);
+      } catch (error) {
+        console.error("WallGen pool fill failed:", error.message);
+      }
+    }
+
+    return wallpaperPool;
+  })().finally(() => {
+    wallpaperPoolFillPromise = null;
+  });
+
+  return wallpaperPoolFillPromise;
+}
+
+async function getFeaturedWallpaper() {
+  const pool = await ensureWallpaperPool();
+
+  if (pool.length > 0) {
+    return pool[0];
+  }
+
+  return normalizeWallpaperEntry(buildFallbackWallpaperPayload());
+}
+
+async function getWallpaperBatchForClient(clientId, count = CLIENT_WALLPAPER_BATCH_SIZE) {
+  cleanupClientWallpaperState();
+  const normalizedCount = Math.min(
+    CLIENT_WALLPAPER_BATCH_SIZE,
+    Math.max(1, Number.parseInt(String(count), 10) || CLIENT_WALLPAPER_BATCH_SIZE)
+  );
+  const pool = await ensureWallpaperPool();
+
+  if (!pool.length) {
+    return [normalizeWallpaperEntry(buildFallbackWallpaperPayload())];
+  }
+
+  const clientState = getClientState(clientId);
+  let availableWallpapers = pool.filter(
+    (entry) => !clientState.seenWallpaperIds.has(entry.wallpaperId)
+  );
+
+  if (availableWallpapers.length < normalizedCount) {
+    clientState.seenWallpaperIds.clear();
+    availableWallpapers = [...pool];
+  }
+
+  const orderedWallpapers = availableWallpapers
+    .map((entry, index) => ({
+      entry,
+      score: hashString(
+        `${clientId}:${clientState.requestCount}:${entry.wallpaperId}:${index}`
+      )
+    }))
+    .sort((left, right) => left.score - right.score)
+    .map((item) => item.entry);
+  const selectedWallpapers = orderedWallpapers.slice(0, normalizedCount);
+
+  selectedWallpapers.forEach((entry) => {
+    clientState.seenWallpaperIds.add(entry.wallpaperId);
+  });
+
+  clientState.requestCount += 1;
+  clientState.lastServedAt = Date.now();
+
+  if (wallpaperPool.length < SERVER_WALLPAPER_POOL_SIZE) {
+    ensureWallpaperPool().catch(() => {});
+  }
+
+  return selectedWallpapers;
 }
 
 function sendJson(response, statusCode, payload) {
@@ -910,16 +1003,34 @@ function buildWallpaperPreviewSvg(payload) {
 
 const server = http.createServer((request, response) => {
   const requestUrl = new URL(request.url, `http://${request.headers.host}`);
+  const clientId =
+    requestUrl.searchParams.get("clientId") ||
+    request.headers["x-wallgen-client-id"] ||
+    request.socket.remoteAddress ||
+    "anonymous";
 
   if (requestUrl.pathname === "/api/wallpaper") {
-    const forceRefresh =
-      requestUrl.searchParams.get("refresh") === "1" ||
-      requestUrl.searchParams.has("nonce");
-    const refreshNonce = requestUrl.searchParams.get("nonce") || "";
+    getWallpaperBatchForClient(String(clientId), 1)
+      .then((payloads) => {
+        sendJson(response, 200, payloads[0] || null);
+      })
+      .catch((error) => {
+        sendJson(response, 500, { error: error.message });
+      });
+    return;
+  }
 
-    getCurrentWallpaper(forceRefresh, refreshNonce)
-      .then((payload) => {
-        sendJson(response, 200, payload);
+  if (requestUrl.pathname === "/api/wallpapers") {
+    const count = requestUrl.searchParams.get("count") || String(CLIENT_WALLPAPER_BATCH_SIZE);
+
+    getWallpaperBatchForClient(String(clientId), count)
+      .then((payloads) => {
+        sendJson(response, 200, {
+          clientBatchSize: CLIENT_WALLPAPER_BATCH_SIZE,
+          refillThreshold: CLIENT_WALLPAPER_REFILL_THRESHOLD,
+          poolSize: SERVER_WALLPAPER_POOL_SIZE,
+          items: payloads
+        });
       })
       .catch((error) => {
         sendJson(response, 500, { error: error.message });
@@ -928,13 +1039,9 @@ const server = http.createServer((request, response) => {
   }
 
   if (requestUrl.pathname === "/api/wallpaper-batch") {
-    const forceRefresh =
-      requestUrl.searchParams.get("refresh") === "1" ||
-      requestUrl.searchParams.has("nonce");
-    const refreshNonce = requestUrl.searchParams.get("nonce") || "";
-    const count = requestUrl.searchParams.get("count") || "5";
+    const count = requestUrl.searchParams.get("count") || String(CLIENT_WALLPAPER_BATCH_SIZE);
 
-    getWallpaperBatch(count, forceRefresh, refreshNonce)
+    getWallpaperBatchForClient(String(clientId), count)
       .then((payloads) => {
         sendJson(response, 200, payloads);
       })
@@ -950,12 +1057,7 @@ const server = http.createServer((request, response) => {
   }
 
   if (requestUrl.pathname === "/api/current-wallpaper-image") {
-    const forceRefresh =
-      requestUrl.searchParams.get("refresh") === "1" ||
-      requestUrl.searchParams.has("nonce");
-    const refreshNonce = requestUrl.searchParams.get("nonce") || "";
-
-    getCurrentWallpaper(forceRefresh, refreshNonce)
+    getFeaturedWallpaper()
       .then((payload) => {
         redirect(response, 302, payload.scene.image);
       })
@@ -966,12 +1068,7 @@ const server = http.createServer((request, response) => {
   }
 
   if (requestUrl.pathname === "/api/current-wallpaper-preview.svg") {
-    const forceRefresh =
-      requestUrl.searchParams.get("refresh") === "1" ||
-      requestUrl.searchParams.has("nonce");
-    const refreshNonce = requestUrl.searchParams.get("nonce") || "";
-
-    getCurrentWallpaper(forceRefresh, refreshNonce)
+    getFeaturedWallpaper()
       .then((payload) => {
         sendSvg(response, 200, buildWallpaperPreviewSvg(payload));
       })
@@ -995,4 +1092,7 @@ const server = http.createServer((request, response) => {
 
 server.listen(PORT, () => {
   console.log(`WallGen running on http://localhost:${PORT}`);
+  ensureWallpaperPool().catch((error) => {
+    console.error("WallGen initial pool warmup failed:", error.message);
+  });
 });
