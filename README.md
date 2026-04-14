@@ -19,16 +19,17 @@ The frontend stays intentionally simple:
 
 ## Features
 
-- Live image fetching from Wikimedia Commons across broad topics
-  - nature
-  - space
-  - cities
-  - technology
-  - countries
-  - oceans
+- Live image fetching from Wikimedia Commons using photography-oriented categories only
+  - nature landscapes
+  - space imagery
+  - country scenery
+  - sports environments
+  - city views
+  - oceans and coastlines
   - wildlife
   - architecture
-  - abstract
+- High-definition landscape filtering for background use
+- Rejection of dashboard-like images, charts, maps, UI graphics, and text-heavy artwork
 - Live quote fetching from ZenQuotes
 - 30-minute wallpaper cache for normal viewing
 - `N` or `Space` to force a fresh wallpaper immediately

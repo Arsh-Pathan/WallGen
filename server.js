@@ -9,6 +9,9 @@ const SLOT_DURATION_MINUTES = SLOT_DURATION_MS / (60 * 1000);
 const PUBLIC_DIR = path.join(__dirname, "public");
 const CATEGORY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const QUOTE_CACHE_TTL_MS = 30 * 60 * 1000;
+const MIN_WALLPAPER_WIDTH = 1920;
+const MIN_WALLPAPER_HEIGHT = 1080;
+const MIN_WALLPAPER_ASPECT_RATIO = 1.5;
 
 const imageThemes = [
   {
@@ -16,10 +19,11 @@ const imageThemes = [
     mood: "wild nature",
     categories: [
       "Category:Featured pictures of nature",
-      "Category:Quality images of landscapes",
-      "Category:Forests",
-      "Category:Mountains",
-      "Category:Waterfalls"
+      "Category:Featured pictures of landscapes",
+      "Category:Mountain photographs",
+      "Category:Forest photographs",
+      "Category:Waterfall photographs",
+      "Category:Sunset photographs"
     ]
   },
   {
@@ -27,51 +31,52 @@ const imageThemes = [
     mood: "cosmic",
     categories: [
       "Category:Astronomical images",
+      "Category:Astronomy photographs",
       "Category:Galaxies",
       "Category:Nebulae",
       "Category:Night sky photographs",
-      "Category:Moon"
+      "Category:Moon photographs"
+    ]
+  },
+  {
+    label: "Countries",
+    mood: "world scenery",
+    categories: [
+      "Category:Landscapes by country",
+      "Category:National parks by country",
+      "Category:Cultural landscapes",
+      "Category:Tourist attractions by country",
+      "Category:Countryside"
+    ]
+  },
+  {
+    label: "Sports",
+    mood: "sports atmosphere",
+    categories: [
+      "Category:Sports photographs",
+      "Category:Stadium photographs",
+      "Category:Association football photographs",
+      "Category:Basketball photographs",
+      "Category:Athletics photographs"
     ]
   },
   {
     label: "Cities",
     mood: "urban energy",
     categories: [
-      "Category:Cityscapes",
+      "Category:Cityscape photographs",
       "Category:Skylines",
-      "Category:Night cityscapes",
-      "Category:Streets in cities",
-      "Category:Urban photography"
-    ]
-  },
-  {
-    label: "Technology",
-    mood: "future tech",
-    categories: [
-      "Category:Computers",
-      "Category:Robots",
-      "Category:Microchips",
-      "Category:Satellites",
-      "Category:Technology"
-    ]
-  },
-  {
-    label: "Countries",
-    mood: "world travel",
-    categories: [
-      "Category:Landscapes by country",
-      "Category:Culture by country",
-      "Category:Architecture by country",
-      "Category:Tourist attractions by country",
-      "Category:National parks by country"
+      "Category:Night cityscape photographs",
+      "Category:Street photographs",
+      "Category:Urban photographs"
     ]
   },
   {
     label: "Oceans",
     mood: "blue horizon",
     categories: [
-      "Category:Oceans",
-      "Category:Coasts",
+      "Category:Sea and ocean photographs",
+      "Category:Coast photographs",
       "Category:Underwater photographs",
       "Category:Seascapes",
       "Category:Coral reefs"
@@ -83,8 +88,8 @@ const imageThemes = [
     categories: [
       "Category:Wildlife photography",
       "Category:Bird photographs",
-      "Category:Mammals in nature",
-      "Category:Marine life",
+      "Category:Mammal photographs",
+      "Category:Marine animal photographs",
       "Category:Macro photography of insects"
     ]
   },
@@ -94,20 +99,9 @@ const imageThemes = [
     categories: [
       "Category:Architecture photographs",
       "Category:Modern architecture",
-      "Category:Bridges",
-      "Category:Towers",
-      "Category:Interiors"
-    ]
-  },
-  {
-    label: "Abstract",
-    mood: "abstract mood",
-    categories: [
-      "Category:Abstract photography",
-      "Category:Abstract nature photography",
-      "Category:Patterns in nature",
-      "Category:Reflections in water",
-      "Category:Light and shadow in nature"
+      "Category:Bridge photographs",
+      "Category:Tower photographs",
+      "Category:Interior photographs"
     ]
   }
 ];
@@ -213,17 +207,23 @@ const interactionModes = [
 const rejectedImageKeywords = [
   "advertisement",
   "album cover",
+  "analytics",
   "banner",
   "barcode",
   "book cover",
+  "brochure",
   "calendar",
+  "caption",
   "certificate",
   "chart",
   "coat of arms",
   "collage",
   "comic",
   "cover art",
+  "dashboard",
+  "data panel",
   "data sheet",
+  "data visualization",
   "diagram",
   "document",
   "drawing",
@@ -237,6 +237,7 @@ const rejectedImageKeywords = [
   "icon",
   "illustration",
   "infographic",
+  "interface",
   "label",
   "line art",
   "locator map",
@@ -247,6 +248,8 @@ const rejectedImageKeywords = [
   "plot",
   "poster",
   "presentation slide",
+  "render",
+  "rendering",
   "scan",
   "schematic",
   "scorecard",
@@ -261,7 +264,13 @@ const rejectedImageKeywords = [
   "text",
   "ticket",
   "timeline",
-  "typography"
+  "typography",
+  "ui",
+  "user interface",
+  "vector",
+  "web page",
+  "webpage",
+  "wireframe"
 ];
 
 let cachedWallpaper = null;
@@ -414,7 +423,7 @@ function isUsableWikimediaImage(page) {
     return false;
   }
 
-  if (!["image/jpeg", "image/png"].includes(info.mime)) {
+  if (info.mime !== "image/jpeg") {
     return false;
   }
 
@@ -422,7 +431,11 @@ function isUsableWikimediaImage(page) {
     return false;
   }
 
-  if (info.width < 1400 || info.width < info.height) {
+  if (
+    info.width < MIN_WALLPAPER_WIDTH ||
+    info.height < MIN_WALLPAPER_HEIGHT ||
+    info.width / info.height < MIN_WALLPAPER_ASPECT_RATIO
+  ) {
     return false;
   }
 
@@ -518,7 +531,7 @@ async function fetchLiveImage(slotKey, selectionSeed = String(slotKey)) {
           prop: "imageinfo",
           titles: titleList.join("|"),
           iiprop: "url|size|mime|extmetadata",
-          iiurlwidth: 2200
+          iiurlwidth: 2560
         });
         const detailsData = await fetchJson(detailsUrl);
         const pages = Object.values(detailsData?.query?.pages || {});
