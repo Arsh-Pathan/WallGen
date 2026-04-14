@@ -66,6 +66,7 @@ img {
   display: grid;
   place-items: center;
   padding: 1.5rem;
+  pointer-events: none;
 }
 
 .headline-panel {
@@ -73,6 +74,7 @@ img {
   text-align: center;
   opacity: 1;
   transition: transform 140ms ease-out, opacity 320ms ease;
+  pointer-events: none;
 }
 
 .quote {
