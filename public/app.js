@@ -389,23 +389,13 @@ window.addEventListener("keydown", (event) => {
     return;
   }
 
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "r") {
+  if (event.key.toLowerCase() === "r") {
     sessionStorage.setItem("wallgen-force-refresh", "1");
   }
 
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") {
+  if (event.key.toLowerCase() === "n") {
     event.preventDefault();
     requestFreshWallpaper();
-    return;
-  }
-
-  if (!event.ctrlKey && !event.metaKey && !event.altKey) {
-    const key = event.key.toLowerCase();
-
-    if (key === "n" || key === " ") {
-      event.preventDefault();
-      requestFreshWallpaper();
-    }
   }
 });
 
