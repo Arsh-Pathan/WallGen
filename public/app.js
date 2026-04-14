@@ -384,23 +384,14 @@ document.addEventListener("dragstart", (event) => {
   event.preventDefault();
 });
 
-window.addEventListener("keydown", (event) => {
-  if (isEditableTarget(event.target)) {
+window.addEventListener("dblclick", (event) => {
+  if (event.button !== 0 || isEditableTarget(event.target)) {
     return;
   }
 
-  if (event.key.toLowerCase() === "r") {
-    sessionStorage.setItem("wallgen-force-refresh", "1");
-  }
-
-  if (event.key.toLowerCase() === "n") {
-    event.preventDefault();
-    requestFreshWallpaper();
-  }
+  requestFreshWallpaper();
 });
 
-const shouldForceRefresh = sessionStorage.getItem("wallgen-force-refresh") === "1";
-sessionStorage.removeItem("wallgen-force-refresh");
 restoreWallpaperState();
 refillWallpaperQueue().catch(() => {});
-loadWallpaper(shouldForceRefresh);
+loadWallpaper(false);
