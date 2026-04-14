@@ -42,6 +42,7 @@ img {
 }
 
 .backdrop-image {
+  background-image: var(--boot-wallpaper-image, none);
   background-position: center;
   background-repeat: no-repeat;
   background-size: cover;

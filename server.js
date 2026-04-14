@@ -880,27 +880,31 @@ function buildWallpaperPreviewSvg(payload) {
   const quoteLines = wrapText(payload?.quote?.text || "", 34).slice(0, 4);
   const quoteMarkup = quoteLines
     .map((line, index) => {
-      const dy = index === 0 ? "0" : "70";
+      const dy = index === 0 ? "0" : "72";
       return `<tspan x="800" dy="${dy}">${escapeXml(line)}</tspan>`;
     })
     .join("");
   const authorMarkup = escapeXml(payload?.quote?.author || "");
   const imageUrl = escapeXml(payload?.scene?.image || "");
   const sceneAlt = escapeXml(payload?.scene?.alt || "WallGen live preview");
+  const quoteStartY = 360 - Math.max(0, quoteLines.length - 1) * 34;
+  const authorY = quoteStartY + Math.max(1, quoteLines.length) * 72 + 54;
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-label="${sceneAlt}">
   <defs>
+    <filter id="wallgenBlur" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="7" />
+    </filter>
     <linearGradient id="wallgenOverlay" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#060a10" stop-opacity="0.12" />
       <stop offset="100%" stop-color="#05070a" stop-opacity="0.72" />
     </linearGradient>
   </defs>
-  <image href="${imageUrl}" x="0" y="0" width="1600" height="900" preserveAspectRatio="xMidYMid slice" />
+  <image href="${imageUrl}" x="-64" y="-42" width="1728" height="984" preserveAspectRatio="xMidYMid slice" filter="url(#wallgenBlur)" />
   <rect x="0" y="0" width="1600" height="900" fill="url(#wallgenOverlay)" />
-  <rect x="180" y="190" width="1240" height="520" rx="28" fill="#000000" fill-opacity="0.18" />
-  <text x="800" y="390" fill="#fff8ec" font-size="58" font-family="Georgia, serif" text-anchor="middle">${quoteMarkup}</text>
-  <text x="800" y="610" fill="#f6f3eb" fill-opacity="0.82" font-size="22" font-family="Manrope, Arial, sans-serif" letter-spacing="5" text-anchor="middle">- ${authorMarkup}</text>
+  <text x="800" y="${quoteStartY}" fill="#fff8ec" font-size="62" font-family="Georgia, serif" text-anchor="middle">${quoteMarkup}</text>
+  <text x="800" y="${authorY}" fill="#f6f3eb" fill-opacity="0.74" font-size="21" font-family="Manrope, Arial, sans-serif" letter-spacing="5" text-anchor="middle">- ${authorMarkup}</text>
 </svg>`;
 }
 

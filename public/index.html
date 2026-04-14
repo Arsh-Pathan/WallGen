@@ -14,6 +14,28 @@
       href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&display=swap"
       rel="stylesheet"
     />
+    <script>
+      (() => {
+        try {
+          const raw = sessionStorage.getItem("wallgen-current-entry");
+
+          if (!raw) {
+            return;
+          }
+
+          const parsed = JSON.parse(raw);
+          const entry = Array.isArray(parsed) ? parsed[0] : null;
+          const imageUrl = entry && entry.payload && entry.payload.scene && entry.payload.scene.image;
+
+          if (!imageUrl) {
+            return;
+          }
+
+          const escapedUrl = String(imageUrl).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+          document.documentElement.style.setProperty("--boot-wallpaper-image", `url("${escapedUrl}")`);
+        } catch {}
+      })();
+    </script>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>

@@ -4,12 +4,15 @@ const quoteAuthor = document.getElementById("quoteAuthor");
 const headlinePanel = document.getElementById("headlinePanel");
 
 const PRELOADED_WALLPAPER_COUNT = 5;
+const WALLGEN_CURRENT_ENTRY_KEY = "wallgen-current-entry";
+const WALLGEN_QUEUE_KEY = "wallgen-wallpaper-queue";
 let refreshTimeout = null;
 let activeQuoteFont = "";
 let wallpaperQueue = [];
 let queueFillPromise = null;
 let wallpaperLoadPromise = null;
 let activeWallpaperUrl = "";
+let activeWallpaperEntry = null;
 
 const quoteFontCatalog = [
   "Alegreya",
@@ -138,6 +141,73 @@ async function prepareWallpaperEntry(payload) {
   };
 }
 
+function isValidWallpaperEntry(entry) {
+  return Boolean(
+    entry &&
+      entry.payload &&
+      entry.payload.scene &&
+      typeof entry.payload.scene.image === "string" &&
+      entry.payload.quote &&
+      typeof entry.payload.quote.text === "string" &&
+      typeof entry.payload.quote.author === "string"
+  );
+}
+
+function readStoredWallpaperEntries(storageKey) {
+  try {
+    const raw = window.sessionStorage.getItem(storageKey);
+
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw);
+
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.filter(isValidWallpaperEntry);
+  } catch {
+    return [];
+  }
+}
+
+function persistWallpaperState() {
+  try {
+    if (activeWallpaperEntry) {
+      window.sessionStorage.setItem(WALLGEN_CURRENT_ENTRY_KEY, JSON.stringify([activeWallpaperEntry]));
+    } else {
+      window.sessionStorage.removeItem(WALLGEN_CURRENT_ENTRY_KEY);
+    }
+
+    window.sessionStorage.setItem(WALLGEN_QUEUE_KEY, JSON.stringify(wallpaperQueue));
+  } catch {
+    // Ignore session storage failures and continue with in-memory caching.
+  }
+}
+
+function restoreWallpaperState() {
+  const currentEntries = readStoredWallpaperEntries(WALLGEN_CURRENT_ENTRY_KEY);
+  const queuedEntries = readStoredWallpaperEntries(WALLGEN_QUEUE_KEY);
+  const restoredCurrent = currentEntries[0] || null;
+
+  wallpaperQueue = queuedEntries.filter(
+    (entry) => entry.payload.scene.image !== restoredCurrent?.payload?.scene?.image
+  );
+
+  if (!restoredCurrent) {
+    persistWallpaperState();
+    return false;
+  }
+
+  activeQuoteFont = restoredCurrent.quoteFontFamily || activeQuoteFont;
+  activeWallpaperEntry = restoredCurrent;
+  applyWallpaper(restoredCurrent.payload, restoredCurrent.quoteFontFamily || "Georgia");
+  persistWallpaperState();
+  return true;
+}
+
 function appendPreparedWallpapers(entries) {
   const knownImages = new Set([
     activeWallpaperUrl,
@@ -154,6 +224,8 @@ function appendPreparedWallpapers(entries) {
     wallpaperQueue.push(entry);
     knownImages.add(imageUrl);
   }
+
+  persistWallpaperState();
 }
 
 async function fetchPreparedWallpaper(forceFresh) {
@@ -216,7 +288,12 @@ function applyWallpaper(payload, quoteFontFamily) {
   backdropImage.style.backgroundImage = `url("${payload.scene.image}")`;
   backdropImage.setAttribute("aria-label", payload.scene.alt);
   activeWallpaperUrl = payload.scene.image;
+  activeWallpaperEntry = {
+    payload,
+    quoteFontFamily
+  };
   scheduleAutoRefresh(payload.nextRefreshAt);
+  persistWallpaperState();
 }
 
 function scheduleAutoRefresh(nextRefreshAt) {
@@ -239,6 +316,7 @@ async function loadWallpaper(forceFresh) {
 
       if (forceFresh && wallpaperQueue.length > 0) {
         entry = wallpaperQueue.shift() || null;
+        persistWallpaperState();
       }
 
       if (!entry) {
@@ -333,4 +411,6 @@ window.addEventListener("keydown", (event) => {
 
 const shouldForceRefresh = sessionStorage.getItem("wallgen-force-refresh") === "1";
 sessionStorage.removeItem("wallgen-force-refresh");
+restoreWallpaperState();
+refillWallpaperQueue().catch(() => {});
 loadWallpaper(shouldForceRefresh);
