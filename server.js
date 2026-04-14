@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 
 const PORT = Number(process.env.PORT) || 3000;
-const SLOT_DURATION_MS = 3 * 60 * 60 * 1000;
+const SLOT_DURATION_MS = 30 * 60 * 1000;
 const PUBLIC_DIR = path.join(__dirname, "public");
 const CATEGORY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const QUOTE_CACHE_TTL_MS = 30 * 60 * 1000;
@@ -585,7 +585,7 @@ async function buildWallpaperPayload(now = Date.now(), selectionSeed = String(no
     statusLine:
       failures.length > 0
         ? "One live source was unavailable, so WallGen filled the missing part with a fallback."
-        : "Live internet wallpaper and quote assembled for the current 3-hour cycle.",
+        : "Live internet wallpaper and quote assembled for the current 30-minute cycle.",
     sourceState: failures.length > 0 ? "mixed" : "live"
   };
 }
@@ -624,6 +624,14 @@ function sendJson(response, statusCode, payload) {
     "Cache-Control": "no-store"
   });
   response.end(JSON.stringify(payload));
+}
+
+function redirect(response, statusCode, location) {
+  response.writeHead(statusCode, {
+    Location: location,
+    "Cache-Control": "no-store"
+  });
+  response.end();
 }
 
 function sendFile(response, targetPath) {
@@ -667,6 +675,22 @@ const server = http.createServer((request, response) => {
 
   if (requestUrl.pathname === "/api/health") {
     sendJson(response, 200, { ok: true });
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/current-wallpaper-image") {
+    const forceRefresh =
+      requestUrl.searchParams.get("refresh") === "1" ||
+      requestUrl.searchParams.has("nonce");
+    const refreshNonce = requestUrl.searchParams.get("nonce") || "";
+
+    getCurrentWallpaper(forceRefresh, refreshNonce)
+      .then((payload) => {
+        redirect(response, 302, payload.scene.image);
+      })
+      .catch((error) => {
+        sendJson(response, 500, { error: error.message });
+      });
     return;
   }
 

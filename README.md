@@ -1,6 +1,12 @@
 # WallGen
 
-WallGen is a minimal wallpaper web app that pulls a live background image and a live quote, renders them full-screen, and refreshes the pairing every 3 hours.
+WallGen is a minimal wallpaper web app that pulls a live background image and a live quote, renders them full-screen, and refreshes the pairing every 30 minutes.
+
+Live site: `https://wallgen.code-host.online/`
+
+## Current Live Wallpaper
+
+![Current live WallGen wallpaper](https://wallgen.code-host.online/api/current-wallpaper-image)
 
 The frontend stays intentionally simple:
 
@@ -24,7 +30,7 @@ The frontend stays intentionally simple:
   - architecture
   - abstract
 - Live quote fetching from ZenQuotes
-- 3-hour wallpaper cache for normal viewing
+- 30-minute wallpaper cache for normal viewing
 - `Ctrl+N` to force a fresh wallpaper immediately
 - `Ctrl+R` supported with a fresh reload request
 - triple-click anywhere to force a fresh wallpaper immediately
@@ -83,6 +89,7 @@ The backend exposes:
 
 - `GET /api/health`
 - `GET /api/wallpaper`
+- `GET /api/current-wallpaper-image`
 
 `/api/wallpaper`:
 
