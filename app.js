@@ -1,26 +1,106 @@
-/* ═══════════════════════════════════════════════════════
-   WallGen — Standalone Live Wallpaper
-   No server. Fetches live images + quotes from the web.
-   Designed for Lively Wallpaper (Windows).
-   ═══════════════════════════════════════════════════════ */
 
-/* ─── DOM ─── */
 const backdropImage = document.getElementById("backdropImage");
 const quoteText = document.getElementById("quoteText");
 const quoteAuthor = document.getElementById("quoteAuthor");
 const headlinePanel = document.getElementById("headlinePanel");
 
-/* ─── Config ─── */
-const AUTO_ROTATE_MS = 30 * 60 * 1000;
+const AUTO_ROTATE_MS = 5 * 60 * 1000; // 5 minutes
 const CROSSFADE_MS = 900;
 const QUOTE_FADE_MS = 520;
 const RECONNECT_INTERVAL_MS = 30_000;
 const IMAGE_BATCH_SIZE = 30;
+// Minimum time between manual/automatic loadNext calls (ms)
+const LOAD_DEBOUNCE_MS = 800;
+let _lastLoadMs = 0;
 const PICSUM_TOTAL_PAGES = 33;
 const QUOTES_API = "https://zenquotes.io/api/quotes";
 const FONTS_API = "https://api.fontsource.org/v1/fonts";
 
-// --- localStorage cache utils
+const CACHE_NAME = 'wallgen-image-cache-v1';
+const CACHE_MANIFEST_KEY = 'wg_cache_map';
+const CACHE_MAX_AGE_MS = 5 * 24 * 60 * 60 * 1000; 
+
+function loadCacheManifest() {
+  try {
+    return JSON.parse(safeGetItem(CACHE_MANIFEST_KEY) || '{}');
+  } catch {
+    return {};
+  }
+}
+
+function saveCacheManifest(manifest) {
+  try {
+    safeSetItem(CACHE_MANIFEST_KEY, JSON.stringify(manifest));
+  } catch {}
+}
+
+async function cacheImageRemote(url) {
+  if (!url || url.startsWith('data:')) return false;
+  try {
+    const cache = await caches.open(CACHE_NAME);
+    // Try to fetch the resource (CORS may block some hosts)
+    const resp = await fetch(url, { mode: 'cors', cache: 'no-store' });
+    if (!resp.ok) return false;
+    await cache.put(url, resp.clone());
+    const manifest = loadCacheManifest();
+    manifest[url] = Date.now();
+    saveCacheManifest(manifest);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function getCachedBlobUrl(url) {
+  try {
+    const cache = await caches.open(CACHE_NAME);
+    const match = await cache.match(url);
+    if (!match) return null;
+    const blob = await match.blob();
+    return URL.createObjectURL(blob);
+  } catch {
+    return null;
+  }
+}
+
+async function cleanupOldCache() {
+  try {
+    const manifest = loadCacheManifest();
+    const cache = await caches.open(CACHE_NAME);
+    let changed = false;
+    const now = Date.now();
+    for (const [key, ts] of Object.entries(manifest)) {
+      if (now - ts > CACHE_MAX_AGE_MS) {
+        try {
+          await cache.delete(key);
+        } catch {}
+        delete manifest[key];
+        changed = true;
+      }
+    }
+    if (changed) saveCacheManifest(manifest);
+  } catch {}
+}
+
+// Load cached scenes into the runtime pool (called at boot)
+async function loadCachedScenesToPool() {
+  try {
+    const manifest = loadCacheManifest();
+    const urls = Object.keys(manifest || {});
+    const scenes = [];
+    for (let i = 0; i < urls.length; i++) {
+      const url = urls[i];
+      const blobUrl = await getCachedBlobUrl(url);
+      if (!blobUrl) continue;
+      scenes.push({ id: `cached-${i}`, name: 'Cached', image: blobUrl, alt: 'Cached image' });
+    }
+    if (scenes.length) {
+      // Prepend cached scenes so they're used before fetching new ones when offline
+      imagePool = scenes.concat(imagePool);
+    }
+  } catch {}
+}
+
 function safeGetItem(key) {
   try {
     return localStorage.getItem(key);
@@ -36,7 +116,6 @@ function safeRemoveItem(key) {
 }
 
 function saveSession() {
-  /* Save pools, active scene/quote/font, and used IDs for restore */
   try {
     safeSetItem('wg_imagePool', JSON.stringify(imagePool));
     safeSetItem('wg_quotePool', JSON.stringify(quotePool));
@@ -46,7 +125,6 @@ function saveSession() {
     safeSetItem('wg_usedFontIds', JSON.stringify([...usedFontIds]));
     safeSetItem('wg_lastScene', activeImageUrl || "");
     safeSetItem('wg_lastQuote', activeQuoteText || "");
-    // Also fallback IDs
     safeSetItem('wg_usedFallbackImageIds', JSON.stringify([...usedFallbackImageIds]));
     safeSetItem('wg_usedFallbackQuoteTexts', JSON.stringify([...usedFallbackQuoteTexts]));
   } catch {}
@@ -132,6 +210,9 @@ let reconnectTimer = null;
 let isTransitioning = false;
 let isOnline = false;
 
+// Reusable offscreen canvas for image processing to avoid repeated allocations
+let _wgCanvas = null;
+
 /* Image pool: fetched from the internet */
 let imagePool = [];
 const usedImageIds = new Set();
@@ -165,9 +246,70 @@ function shuffle(items) {
 function preloadImage(url) {
   return new Promise((resolve, reject) => {
     const img = new Image();
+    // allow the browser to decode asynchronously to avoid blocking main thread
+    try { img.decoding = 'async'; } catch {}
     img.onload = () => resolve(url);
     img.onerror = () => reject(new Error(`Failed to load: ${url}`));
     img.src = url;
+  });
+}
+
+// Try to center-crop an image to target dimensions and return a data URL.
+// Returns null on failure (CORS, OOM, other errors) so callers can fallback to original URL.
+async function processAndCropImage(url, targetW, targetH, quality = 0.86) {
+  if (!url || url.startsWith('data:')) return null;
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const srcW = img.naturalWidth || img.width;
+        const srcH = img.naturalHeight || img.height;
+        if (!srcW || !srcH) return resolve(null);
+
+        // Calculate scale to cover target (center-crop)
+        const scale = Math.max(targetW / srcW, targetH / srcH);
+        const drawW = Math.round(srcW * scale);
+        const drawH = Math.round(srcH * scale);
+
+        // Source offset to center the crop
+        const sx = Math.max(0, Math.round((drawW - targetW) / 2 / scale));
+        const sy = Math.max(0, Math.round((drawH - targetH) / 2 / scale));
+
+        // Reuse a single offscreen canvas to reduce GC pressure
+        if (!_wgCanvas) _wgCanvas = document.createElement('canvas');
+        const canvas = _wgCanvas;
+        canvas.width = targetW;
+        canvas.height = targetH;
+        const ctx = canvas.getContext('2d');
+
+        // Draw the image scaled so we can crop center region
+        // drawImage(img, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight)
+        ctx.drawImage(
+          img,
+          sx,
+          sy,
+          Math.round(targetW / scale),
+          Math.round(targetH / scale),
+          0,
+          0,
+          targetW,
+          targetH
+        );
+
+        // Export as JPEG (smaller than PNG) unless transparency required
+        const dataUrl = canvas.toDataURL('image/jpeg', quality);
+        resolve(dataUrl);
+      } catch (e) {
+        resolve(null);
+      }
+    };
+    img.onerror = () => resolve(null);
+    img.src = url;
+    // If the image is cached and complete, try to proceed
+    if (img.complete && img.naturalWidth) {
+      img.onload();
+    }
   });
 }
 
@@ -236,7 +378,13 @@ async function fetchImageBatch() {
     .map((photo) => ({
       id: String(photo.id),
       name: `Photo by ${photo.author}`,
-      image: `https://picsum.photos/id/${photo.id}/2560/1440`,
+      // Request an appropriately sized image for the current viewport
+      image: (() => {
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const w = Math.min(1280, Math.round(window.innerWidth * dpr));
+        const h = Math.min(720, Math.round(window.innerHeight * dpr));
+        return `https://picsum.photos/id/${photo.id}/${w}/${h}`;
+      })(),
       alt: `Photograph by ${photo.author}`,
       author: photo.author
     }));
@@ -570,18 +718,22 @@ async function applyWallpaper(scene, quote, animate, font) {
 
 async function loadNext(animate) {
   if (isTransitioning) return;
+  const now = Date.now();
+  if (now - _lastLoadMs < LOAD_DEBOUNCE_MS) return;
+  _lastLoadMs = now;
   isTransitioning = true;
 
   try {
     /* Try to refill pools from the internet */
-    const [hasImages, hasQuotes] = await Promise.allSettled([
+    const refillResults = await Promise.allSettled([
       ensureImagePool(),
       ensureQuotePool(),
       ensureFontPool()
     ]);
 
-    const gotImages = hasImages.status === "fulfilled" && hasImages.value;
-    const gotQuotes = hasQuotes.status === "fulfilled" && hasQuotes.value;
+    const gotImages = refillResults[0] && refillResults[0].status === 'fulfilled' && refillResults[0].value;
+    const gotQuotes = refillResults[1] && refillResults[1].status === 'fulfilled' && refillResults[1].value;
+    const gotFonts = refillResults[2] && refillResults[2].status === 'fulfilled' && refillResults[2].value;
 
     /* If we couldn't get live content, start reconnection loop */
     if (!gotImages && !gotQuotes && !isOnline) {
@@ -595,12 +747,28 @@ async function loadNext(animate) {
 
     if (!scene) return;
 
-    /* Preload the image and font concurrently before applying */
+    /* Preload the image and font concurrently before applying. Then attempt a safe center-crop. */
     try {
       await Promise.allSettled([
         preloadImage(scene.image),
         preloadFontCSS(font)
       ]);
+
+      try {
+        const originalSource = scene.image;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        // Cap processing size to avoid huge canvases in low-memory environments
+        const targetW = Math.min(Math.round(window.innerWidth * dpr), 1280);
+        const targetH = Math.min(Math.round(window.innerHeight * dpr), 720);
+        const cropped = await processAndCropImage(scene.image, targetW, targetH);
+        if (cropped) {
+          scene.image = cropped;
+        }
+        // Attempt to cache the original remote image (if it was remote)
+        if (originalSource && !originalSource.startsWith('data:')) {
+          cacheImageRemote(originalSource).catch(() => {});
+        }
+      } catch {}
     } catch {
       /* If preload fails, still apply — browser will retry loading it */
     }
@@ -622,12 +790,26 @@ function scheduleAutoRefresh() {
 
 /* ─── Parallax ─── */
 
+// Throttle pointermove updates via requestAnimationFrame to avoid main-thread thrash
+let _wgPointerX = 0;
+let _wgPointerY = 0;
+let _wgPointerScheduled = false;
 window.addEventListener("pointermove", (event) => {
-  const el = getBackdropEl();
-  if (!el) return;
-  const x = (event.clientX / window.innerWidth - 0.5) * 42;
-  const y = (event.clientY / window.innerHeight - 0.5) * 42;
-  el.style.transform = `scale(1.14) translate3d(${x * -1.35}px, ${y * -1.35}px, 0)`;
+  _wgPointerX = event.clientX;
+  _wgPointerY = event.clientY;
+  if (_wgPointerScheduled) return;
+  _wgPointerScheduled = true;
+  requestAnimationFrame(() => {
+    const el = getBackdropEl();
+    if (!el) {
+      _wgPointerScheduled = false;
+      return;
+    }
+    const x = (_wgPointerX / window.innerWidth - 0.5) * 42;
+    const y = (_wgPointerY / window.innerHeight - 0.5) * 42;
+    el.style.transform = `scale(1.14) translate3d(${x * -1.35}px, ${y * -1.35}px, 0)`;
+    _wgPointerScheduled = false;
+  });
 });
 
 window.addEventListener("pointerleave", () => {
@@ -655,24 +837,16 @@ document.addEventListener("dragstart", (e) => {
   if (!isEditable(e.target)) e.preventDefault();
 });
 
-/* ─── Keyboard Shortcut to Switch ─── */
-// Use "N" for next wallpaper
-window.addEventListener("keydown", (event) => {
-  if ((event.key === "n" || event.key === "N" || event.code === "Space") && !isEditable(event.target)) {
-    event.preventDefault();
-    loadNext(true);
-  }
-});
-
-// (Optionally keep double-click support: comment out below to disable)
-window.addEventListener("dblclick", (event) => {
-  if (event.button !== 0 || isEditable(event.target)) return;
-  loadNext(true);
-});
+/* Keyboard shortcuts and double-click support removed to avoid accidental triggers in embedding hosts. */
 
 /* ─── Boot ─── */
 
 loadSession(); // attempt session restore
+
+// Cleanup old cached images and load any cached scenes into pool
+cleanupOldCache().finally(() => {
+  loadCachedScenesToPool().catch(() => {});
+});
 
 /* Show previous quote/wallpaper if session exists, else an offline random */
 const cachedLastQuoteText = safeGetItem('wg_lastQuote');

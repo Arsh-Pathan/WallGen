@@ -1,9 +1,0 @@
-{
-  "name": "wallgen",
-  "version": "1.0.0",
-  "description": "Wallpaper generator with rotating quotes and ambient interactions.",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  }
-}

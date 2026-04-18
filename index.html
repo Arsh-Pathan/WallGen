@@ -6,7 +6,7 @@
     <title>WallGen</title>
     <meta
       name="description"
-      content="A living wallpaper experience with rotating quotes and ambient motion."
+      content="A standalone live wallpaper with rotating quotes and ambient motion."
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -14,29 +14,7 @@
       href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&display=swap"
       rel="stylesheet"
     />
-    <script>
-      (() => {
-        try {
-          const raw = sessionStorage.getItem("wallgen-current-entry");
-
-          if (!raw) {
-            return;
-          }
-
-          const parsed = JSON.parse(raw);
-          const entry = parsed && !Array.isArray(parsed) ? parsed : Array.isArray(parsed) ? parsed[0] : null;
-          const imageUrl = entry && entry.payload && entry.payload.scene && entry.payload.scene.image;
-
-          if (!imageUrl) {
-            return;
-          }
-
-          const escapedUrl = String(imageUrl).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-          document.documentElement.style.setProperty("--boot-wallpaper-image", `url("${escapedUrl}")`);
-        } catch {}
-      })();
-    </script>
-    <link rel="stylesheet" href="./public/styles.css" />
+    <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <div class="app-shell">
@@ -47,14 +25,14 @@
 
       <main class="content">
         <section class="headline-panel" id="headlinePanel">
-          <p class="quote" id="quoteText">Keep moving. Quiet progress still changes your horizon.</p>
+          <p class="quote" id="quoteText"></p>
           <p class="quote-author">
-            <span id="quoteAuthor">- WallGen</span>
+            <span id="quoteAuthor"></span>
           </p>
         </section>
       </main>
     </div>
 
-    <script src="./public/app.js"></script>
+    <script src="./app.js"></script>
   </body>
 </html>
