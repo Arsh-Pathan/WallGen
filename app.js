@@ -35,20 +35,36 @@ function saveCacheManifest(manifest) {
 }
 
 async function cacheImageRemote(url) {
-  if (!url || url.startsWith('data:')) return false;
-  try {
-    const cache = await caches.open(CACHE_NAME);
-    // Try to fetch the resource (CORS may block some hosts)
-    const resp = await fetch(url, { mode: 'cors', cache: 'no-store' });
-    if (!resp.ok) return false;
-    await cache.put(url, resp.clone());
-    const manifest = loadCacheManifest();
-    manifest[url] = Date.now();
-    saveCacheManifest(manifest);
-    return true;
-  } catch (e) {
-    return false;
-  }
+  if (!url || url.startsWith('data:') || url.startsWith('blob:')) return false;
+  // Schedule caching during idle to avoid blocking critical work
+  return new Promise((resolve) => {
+    const work = async () => {
+      try {
+        const cache = await caches.open(CACHE_NAME);
+        const resp = await fetch(url, { mode: 'cors', cache: 'no-store' });
+        if (!resp.ok) return resolve(false);
+        await cache.put(url, resp.clone());
+        const manifest = loadCacheManifest();
+        manifest[url] = Date.now();
+        // Keep manifest bounded: remove oldest if too many keys
+        const keys = Object.keys(manifest);
+        if (keys.length > 400) {
+          const sorted = keys.sort((a, b) => manifest[a] - manifest[b]);
+          for (let i = 0; i < sorted.length - 300; i++) delete manifest[sorted[i]];
+        }
+        saveCacheManifest(manifest);
+        resolve(true);
+      } catch (e) {
+        resolve(false);
+      }
+    };
+
+    if (window.requestIdleCallback) {
+      requestIdleCallback(() => work(), { timeout: 2000 });
+    } else {
+      setTimeout(() => work(), 300);
+    }
+  });
 }
 
 async function getCachedBlobUrl(url) {
@@ -57,7 +73,9 @@ async function getCachedBlobUrl(url) {
     const match = await cache.match(url);
     if (!match) return null;
     const blob = await match.blob();
-    return URL.createObjectURL(blob);
+    const obj = URL.createObjectURL(blob);
+    _wgCreatedBlobUrls.add(obj);
+    return obj;
   } catch {
     return null;
   }
@@ -212,6 +230,10 @@ let isOnline = false;
 
 // Reusable offscreen canvas for image processing to avoid repeated allocations
 let _wgCanvas = null;
+// Processing concurrency and created blob-tracking
+const PROCESS_CONCURRENCY = 1;
+let _wgProcessingCount = 0;
+const _wgCreatedBlobUrls = new Set();
 
 /* Image pool: fetched from the internet */
 let imagePool = [];
@@ -257,60 +279,79 @@ function preloadImage(url) {
 // Try to center-crop an image to target dimensions and return a data URL.
 // Returns null on failure (CORS, OOM, other errors) so callers can fallback to original URL.
 async function processAndCropImage(url, targetW, targetH, quality = 0.86) {
-  if (!url || url.startsWith('data:')) return null;
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
+  if (!url || url.startsWith('data:') || url.startsWith('blob:')) return null;
+  if (_wgProcessingCount >= PROCESS_CONCURRENCY) return null;
+  _wgProcessingCount += 1;
+  try {
+    let resp;
+    try {
+      resp = await fetch(url, { mode: 'cors', cache: 'no-store' });
+      if (!resp || !resp.ok) return null;
+    } catch {
+      return null;
+    }
+
+    let blob;
+    try { blob = await resp.blob(); } catch { return null; }
+
+    let bitmap;
+    try {
+      bitmap = await createImageBitmap(blob);
+    } catch (e) {
+      // Fallback: try Image + createImageBitmap
       try {
-        const srcW = img.naturalWidth || img.width;
-        const srcH = img.naturalHeight || img.height;
-        if (!srcW || !srcH) return resolve(null);
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        const loaded = new Promise((res, rej) => { img.onload = res; img.onerror = rej; });
+        img.src = URL.createObjectURL(blob);
+        await loaded;
+        bitmap = await createImageBitmap(img);
+        URL.revokeObjectURL(img.src);
+      } catch (err) {
+        return null;
+      }
+    }
 
-        // Calculate scale to cover target (center-crop)
-        const scale = Math.max(targetW / srcW, targetH / srcH);
-        const drawW = Math.round(srcW * scale);
-        const drawH = Math.round(srcH * scale);
+    const srcW = bitmap.width;
+    const srcH = bitmap.height;
+    if (!srcW || !srcH) return null;
 
-        // Source offset to center the crop
-        const sx = Math.max(0, Math.round((drawW - targetW) / 2 / scale));
-        const sy = Math.max(0, Math.round((drawH - targetH) / 2 / scale));
+    const scale = Math.max(targetW / srcW, targetH / srcH);
+    const sWidth = Math.round(targetW / scale);
+    const sHeight = Math.round(targetH / scale);
+    const drawW = Math.round(srcW * scale);
+    const drawH = Math.round(srcH * scale);
+    const sx = Math.max(0, Math.round((drawW - targetW) / 2 / scale));
+    const sy = Math.max(0, Math.round((drawH - targetH) / 2 / scale));
 
-        // Reuse a single offscreen canvas to reduce GC pressure
+    let outBlob = null;
+    try {
+      if (typeof OffscreenCanvas !== 'undefined') {
+        const off = new OffscreenCanvas(targetW, targetH);
+        const ctx = off.getContext('2d');
+        ctx.drawImage(bitmap, sx, sy, sWidth, sHeight, 0, 0, targetW, targetH);
+        if (off.convertToBlob) outBlob = await off.convertToBlob({ type: 'image/jpeg', quality });
+      } else {
         if (!_wgCanvas) _wgCanvas = document.createElement('canvas');
         const canvas = _wgCanvas;
         canvas.width = targetW;
         canvas.height = targetH;
         const ctx = canvas.getContext('2d');
-
-        // Draw the image scaled so we can crop center region
-        // drawImage(img, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight)
-        ctx.drawImage(
-          img,
-          sx,
-          sy,
-          Math.round(targetW / scale),
-          Math.round(targetH / scale),
-          0,
-          0,
-          targetW,
-          targetH
-        );
-
-        // Export as JPEG (smaller than PNG) unless transparency required
-        const dataUrl = canvas.toDataURL('image/jpeg', quality);
-        resolve(dataUrl);
-      } catch (e) {
-        resolve(null);
+        ctx.clearRect(0, 0, targetW, targetH);
+        ctx.drawImage(bitmap, sx, sy, sWidth, sHeight, 0, 0, targetW, targetH);
+        outBlob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', quality));
       }
-    };
-    img.onerror = () => resolve(null);
-    img.src = url;
-    // If the image is cached and complete, try to proceed
-    if (img.complete && img.naturalWidth) {
-      img.onload();
+    } catch (e) {
+      return null;
     }
-  });
+
+    if (!outBlob) return null;
+    const blobUrl = URL.createObjectURL(outBlob);
+    _wgCreatedBlobUrls.add(blobUrl);
+    return blobUrl;
+  } finally {
+    _wgProcessingCount -= 1;
+  }
 }
 
 function preloadFontCSS(font) {
@@ -677,6 +718,19 @@ function crossfadeBackdrop(imageUrl, alt) {
         setTimeout(() => {
           nextLayer.id = "backdropImage";
           nextLayer.classList.remove("backdrop-image--next");
+          // Revoke any blob URL from the old layer to free memory
+          try {
+            const bg = currentLayer.style.backgroundImage || '';
+            const m = bg.match(/url\(["']?(.*?)["']?\)/);
+            if (m && m[1]) {
+              const oldUrl = m[1];
+              if (oldUrl.startsWith('blob:') && _wgCreatedBlobUrls.has(oldUrl)) {
+                try { URL.revokeObjectURL(oldUrl); } catch {}
+                _wgCreatedBlobUrls.delete(oldUrl);
+              }
+            }
+          } catch (e) {}
+
           currentLayer.remove();
           window.__wgBackdrop = nextLayer;
           resolve();
@@ -700,6 +754,14 @@ async function applyWallpaper(scene, quote, animate, font) {
     applyFont(font);
 
     const el = getBackdropEl();
+    // Revoke previous blob URL if one was used to avoid leaking object URLs
+    try {
+      if (activeImageUrl && activeImageUrl.startsWith('blob:') && _wgCreatedBlobUrls.has(activeImageUrl)) {
+        try { URL.revokeObjectURL(activeImageUrl); } catch {}
+        _wgCreatedBlobUrls.delete(activeImageUrl);
+      }
+    } catch (e) {}
+
     el.style.backgroundImage = `url("${scene.image}")`;
     el.setAttribute("aria-label", scene.alt || scene.name || "WallGen wallpaper");
     el.style.opacity = "1";
@@ -756,16 +818,19 @@ async function loadNext(animate) {
 
       try {
         const originalSource = scene.image;
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        // Cap processing size to avoid huge canvases in low-memory environments
-        const targetW = Math.min(Math.round(window.innerWidth * dpr), 1280);
-        const targetH = Math.min(Math.round(window.innerHeight * dpr), 720);
-        const cropped = await processAndCropImage(scene.image, targetW, targetH);
-        if (cropped) {
-          scene.image = cropped;
+        // If the document is hidden (embedded/background), skip heavy processing
+        if (!document.hidden) {
+          const dpr = Math.min(window.devicePixelRatio || 1, 2);
+          // Cap processing size to avoid huge canvases in low-memory environments
+          const targetW = Math.min(Math.round(window.innerWidth * dpr), 1280);
+          const targetH = Math.min(Math.round(window.innerHeight * dpr), 720);
+          const cropped = await processAndCropImage(scene.image, targetW, targetH);
+          if (cropped) {
+            scene.image = cropped;
+          }
         }
         // Attempt to cache the original remote image (if it was remote)
-        if (originalSource && !originalSource.startsWith('data:')) {
+        if (originalSource && !originalSource.startsWith('data:') && !originalSource.startsWith('blob:')) {
           cacheImageRemote(originalSource).catch(() => {});
         }
       } catch {}
