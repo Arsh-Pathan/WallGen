@@ -1,0 +1,10 @@
+{
+  "name": "WallGen",
+  "version": "1.0",
+  "author": "Arsh Pathan",
+  "entry": "index.html",
+  "type": "web",
+  "preview": "preview.png",
+  "description": "WallGen - live wallpaper with quotes; WebGL renderer available via ?webgl=1",
+  "license": "MIT"
+}

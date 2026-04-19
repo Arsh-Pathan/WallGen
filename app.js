@@ -4,6 +4,50 @@ const quoteText = document.getElementById("quoteText");
 const quoteAuthor = document.getElementById("quoteAuthor");
 const headlinePanel = document.getElementById("headlinePanel");
 
+// Toggle GPU WebGL renderer when present via URL param `?webgl=1` or `?lively=1`.
+const USE_WEBGL = new URLSearchParams(location.search).has('webgl') || new URLSearchParams(location.search).has('lively');
+
+// WebGL runtime safety: disable WebGL renderer after repeated failures
+const WG_WEBGL_ERROR_MAX = 3;
+let _wgWebglErrorCount = 0;
+let _wgWebglDisabled = false;
+
+// Prune blob: URLs to avoid unbounded growth which can cause memory pressure
+function pruneBlobUrls(max = 60) {
+  try {
+    while (_wgCreatedBlobUrls.size > max) {
+      const it = _wgCreatedBlobUrls.values().next();
+      if (it.done) break;
+      const url = it.value;
+      try { URL.revokeObjectURL(url); } catch {}
+      _wgCreatedBlobUrls.delete(url);
+    }
+  } catch {}
+}
+
+async function safeRenderWebgl(url) {
+  if (_wgWebglDisabled) return false;
+  if (!window.WGWebGL || !WGWebGL.isAvailable || !WGWebGL.isAvailable()) return false;
+  try {
+    const ok = await WGWebGL.renderImage(url);
+    if (!ok) throw new Error('WGWebGL.renderImage returned false');
+    _wgWebglErrorCount = 0;
+    return true;
+  } catch (e) {
+    _wgWebglErrorCount += 1;
+    console.warn('WGWebGL render error', e, 'count', _wgWebglErrorCount);
+    if (_wgWebglErrorCount >= WG_WEBGL_ERROR_MAX) {
+      _wgWebglDisabled = true;
+      try { WGWebGL.dispose(); } catch {}
+      const wc = document.getElementById('webglContainer');
+      if (wc) wc.style.display = 'none';
+      console.warn('WGWebGL disabled after repeated errors');
+    }
+    return false;
+  }
+}
+
+
 const AUTO_ROTATE_MS = 5 * 60 * 1000; // 5 minutes
 const CROSSFADE_MS = 900;
 const QUOTE_FADE_MS = 520;
@@ -75,6 +119,7 @@ async function getCachedBlobUrl(url) {
     const blob = await match.blob();
     const obj = URL.createObjectURL(blob);
     _wgCreatedBlobUrls.add(obj);
+    pruneBlobUrls(60);
     return obj;
   } catch {
     return null;
@@ -348,6 +393,7 @@ async function processAndCropImage(url, targetW, targetH, quality = 0.86) {
     if (!outBlob) return null;
     const blobUrl = URL.createObjectURL(outBlob);
     _wgCreatedBlobUrls.add(blobUrl);
+    pruneBlobUrls(60);
     return blobUrl;
   } finally {
     _wgProcessingCount -= 1;
@@ -762,14 +808,40 @@ async function applyWallpaper(scene, quote, animate, font) {
       }
     } catch (e) {}
 
-    el.style.backgroundImage = `url("${scene.image}")`;
-    el.setAttribute("aria-label", scene.alt || scene.name || "WallGen wallpaper");
-    el.style.opacity = "1";
+    // If WebGL renderer is requested and available, render into the canvas instead
+    if (USE_WEBGL && window.WGWebGL && WGWebGL.isAvailable && WGWebGL.isAvailable()) {
+      try {
+        // hide background image element (canvas will be visible)
+        const bgEl = document.getElementById('backdropImage');
+        if (bgEl) bgEl.style.backgroundImage = 'none';
+        const webglContainer = document.getElementById('webglContainer');
+        if (webglContainer) webglContainer.style.display = 'block';
+        await safeRenderWebgl(scene.image);
+        // set accessible label on canvas container
+        if (webglContainer) webglContainer.setAttribute("aria-label", scene.alt || scene.name || "WallGen wallpaper");
+      } catch (e) {
+        // fallback to CSS background if WebGL render fails
+        el.style.backgroundImage = `url("${scene.image}")`;
+        el.setAttribute("aria-label", scene.alt || scene.name || "WallGen wallpaper");
+      }
+    } else {
+      el.style.backgroundImage = `url("${scene.image}")`;
+      el.setAttribute("aria-label", scene.alt || scene.name || "WallGen wallpaper");
+      el.style.opacity = "1";
+    }
   } else {
-    await Promise.all([
-      animateQuote(quote, font),
-      crossfadeBackdrop(scene.image, scene.alt || scene.name || "WallGen wallpaper")
-    ]);
+    if (USE_WEBGL && window.WGWebGL && WGWebGL.isAvailable && WGWebGL.isAvailable()) {
+      // Render to WebGL and animate quote only
+      await Promise.allSettled([
+        animateQuote(quote, font),
+        (async () => { try { await safeRenderWebgl(scene.image); } catch {} })()
+      ]);
+    } else {
+      await Promise.all([
+        animateQuote(quote, font),
+        crossfadeBackdrop(scene.image, scene.alt || scene.name || "WallGen wallpaper")
+      ]);
+    }
   }
 
   activeImageUrl = scene.image;
@@ -912,6 +984,18 @@ loadSession(); // attempt session restore
 cleanupOldCache().finally(() => {
   loadCachedScenesToPool().catch(() => {});
 });
+
+// If requested, initialize the lightweight WebGL renderer (non-blocking)
+try {
+  if (USE_WEBGL && window.WGWebGL && WGWebGL.init) {
+    const container = document.getElementById('webglContainer');
+    const ok = WGWebGL.init(container);
+    if (ok) {
+      // Prefer the canvas-backed backdrop when WebGL is active
+      window.__wgBackdrop = container.querySelector('canvas') || document.getElementById('backdropImage');
+    }
+  }
+} catch (e) {}
 
 /* Show previous quote/wallpaper if session exists, else an offline random */
 const cachedLastQuoteText = safeGetItem('wg_lastQuote');
