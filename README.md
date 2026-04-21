@@ -47,5 +47,3 @@ WallGen is a web-based live wallpaper designed to run in a browser or inside the
 
 **License**
 - MIT — modify and redistribute. See the repository for license details.
-
-If you want, I can add an in-page settings UI to toggle Lively mode, WebGL, and caching at runtime, and produce a ready-to-distribute ZIP.

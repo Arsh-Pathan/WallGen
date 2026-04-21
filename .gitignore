@@ -5,3 +5,4 @@ wallgen.out.log
 wallgen.err.log
 npm-debug.log*
 dist/
+example

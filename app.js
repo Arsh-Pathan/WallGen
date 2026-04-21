@@ -5,7 +5,39 @@ const quoteAuthor = document.getElementById("quoteAuthor");
 const headlinePanel = document.getElementById("headlinePanel");
 
 // Toggle GPU WebGL renderer when present via URL param `?webgl=1` or `?lively=1`.
-const USE_WEBGL = new URLSearchParams(location.search).has('webgl') || new URLSearchParams(location.search).has('lively');
+const qs = new URLSearchParams(location.search);
+const USE_WEBGL = qs.has('webgl') || qs.has('lively');
+
+// Auto-detect Lively host using several heuristics; if detected, enable strict lightweight mode.
+function detectLivelyHost() {
+  try {
+    if (qs.has('lively')) return true;
+    const ua = (navigator && navigator.userAgent) ? navigator.userAgent.toLowerCase() : '';
+    if (ua.includes('lively') || ua.includes('livelywallpaper') || ua.includes('lively-wallpaper')) return true;
+    if (typeof window.external !== 'undefined') {
+      // some hosts expose external APIs; try a safe check for any key containing 'lively'
+      try {
+        for (const k in window.external) {
+          if (/lively/i.test(k)) return true;
+        }
+      } catch {}
+    }
+  } catch {}
+  return false;
+}
+
+const LIGHTWEIGHT_MODE = detectLivelyHost();
+
+// In lightweight mode (Lively), avoid expensive CPU/image work and aggressive caching.
+let WG_CACHE_ENABLED = !LIGHTWEIGHT_MODE;
+const DONT_CROP = !!LIGHTWEIGHT_MODE;
+if (LIGHTWEIGHT_MODE) {
+  // reduce concurrency to avoid CPU spikes in host
+  // Note: processAndCropImage checks concurrency via _wgProcessingCount
+  // and PROCESS_CONCURRENCY is used elsewhere; override conservatively here.
+  // eslint-disable-next-line no-unused-vars
+  var PROCESS_CONCURRENCY = 0;
+}
 
 // WebGL runtime safety: disable WebGL renderer after repeated failures
 const WG_WEBGL_ERROR_MAX = 3;
@@ -48,7 +80,7 @@ async function safeRenderWebgl(url) {
 }
 
 
-const AUTO_ROTATE_MS = 5 * 60 * 1000; // 5 minutes
+const AUTO_ROTATE_MS = 2 * 60 * 1000; // 2 minutes
 const CROSSFADE_MS = 900;
 const QUOTE_FADE_MS = 520;
 const RECONNECT_INTERVAL_MS = 30_000;
@@ -79,6 +111,7 @@ function saveCacheManifest(manifest) {
 }
 
 async function cacheImageRemote(url) {
+  if (!WG_CACHE_ENABLED) return false;
   if (!url || url.startsWith('data:') || url.startsWith('blob:')) return false;
   // Schedule caching during idle to avoid blocking critical work
   return new Promise((resolve) => {
@@ -325,6 +358,7 @@ function preloadImage(url) {
 // Returns null on failure (CORS, OOM, other errors) so callers can fallback to original URL.
 async function processAndCropImage(url, targetW, targetH, quality = 0.86) {
   if (!url || url.startsWith('data:') || url.startsWith('blob:')) return null;
+  if (DONT_CROP) return null;
   if (_wgProcessingCount >= PROCESS_CONCURRENCY) return null;
   _wgProcessingCount += 1;
   try {
