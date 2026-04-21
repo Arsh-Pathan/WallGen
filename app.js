@@ -313,6 +313,33 @@ let _wgCanvas = null;
 const PROCESS_CONCURRENCY = 1;
 let _wgProcessingCount = 0;
 const _wgCreatedBlobUrls = new Set();
+// Worker for image processing (if available)
+let _wgProcessorWorker = null;
+let _wgWorkerReady = false;
+try {
+  if (typeof Worker !== 'undefined' && !LIGHTWEIGHT_MODE) {
+    _wgProcessorWorker = new Worker('./image_processor_worker.js');
+    _wgProcessorWorker.onmessage = (ev) => {
+      const d = ev.data || {};
+      if (!d.id) return;
+      const cb = _wgProcessorCallbacks && _wgProcessorCallbacks[d.id];
+      if (!cb) return;
+      delete _wgProcessorCallbacks[d.id];
+      if (d.success && d.buffer) {
+        const blob = new Blob([d.buffer], { type: d.mime || 'image/jpeg' });
+        cb.resolve(blob);
+      } else {
+        cb.reject(new Error(d.reason || 'worker-failed'));
+      }
+    };
+    _wgWorkerReady = true;
+  }
+} catch (e) {
+  _wgWorkerReady = false;
+}
+
+const _wgProcessorCallbacks = {};
+let _wgProcessorIdSeq = 1;
 
 /* Image pool: fetched from the internet */
 let imagePool = [];
@@ -363,6 +390,31 @@ async function processAndCropImage(url, targetW, targetH, quality = 0.86) {
   if (_wgProcessingCount >= PROCESS_CONCURRENCY) return null;
   _wgProcessingCount += 1;
   try {
+    // If worker available, delegate processing to worker to keep main thread free
+    if (_wgWorkerReady && _wgProcessorWorker) {
+      const id = `p${_wgProcessorIdSeq++}`;
+      const promise = new Promise((resolve, reject) => {
+        _wgProcessorCallbacks[id] = { resolve, reject };
+        try {
+          _wgProcessorWorker.postMessage({ id, url, targetW, targetH, quality });
+        } catch (e) {
+          delete _wgProcessorCallbacks[id];
+          reject(e);
+        }
+      });
+      try {
+        const blob = await promise;
+        if (!blob) return null;
+        const blobUrl = URL.createObjectURL(blob);
+        _wgCreatedBlobUrls.add(blobUrl);
+        pruneBlobUrls(60);
+        return blobUrl;
+      } catch (e) {
+        // fallback to main-thread processing below
+      }
+    }
+
+    // Fallback: main-thread processing (existing path)
     let resp;
     try {
       resp = await fetch(url, { mode: 'cors', cache: 'no-store' });
@@ -378,7 +430,6 @@ async function processAndCropImage(url, targetW, targetH, quality = 0.86) {
     try {
       bitmap = await createImageBitmap(blob);
     } catch (e) {
-      // Fallback: try Image + createImageBitmap
       try {
         const img = new Image();
         img.crossOrigin = 'anonymous';
