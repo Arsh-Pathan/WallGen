@@ -58,6 +58,7 @@ function pruneBlobUrls(max = 60) {
 }
 
 async function safeRenderWebgl(url) {
+  if (LIGHTWEIGHT_MODE) return false;
   if (_wgWebglDisabled) return false;
   if (!window.WGWebGL || !WGWebGL.isAvailable || !WGWebGL.isAvailable()) return false;
   try {
@@ -554,23 +555,45 @@ async function ensureImagePool() {
 /* ─── Quote Fetching (ZenQuotes API) ─── */
 
 async function fetchQuoteBatch() {
-  const response = await fetch(QUOTES_API);
-  if (!response.ok) throw new Error(`ZenQuotes HTTP ${response.status}`);
+  // Try primary source (ZenQuotes) first, then fallback to type.fit if CORS or errors occur
+  try {
+    const response = await fetch(QUOTES_API);
+    if (response.ok) {
+      const data = await response.json();
+      if (Array.isArray(data)) {
+        return data
+          .filter(
+            (e) =>
+              e &&
+              typeof e.q === "string" &&
+              typeof e.a === "string" &&
+              e.q.length >= 30 &&
+              e.q.length <= 200
+          )
+          .map((e) => ({ text: e.q.trim(), author: e.a.trim() }));
+      }
+    }
+  } catch (e) {
+    // ignore and try fallback
+  }
 
-  const data = await response.json();
+  // Fallback: type.fit (simple public quotes list)
+  try {
+    const response = await fetch('https://type.fit/api/quotes');
+    if (response.ok) {
+      const data = await response.json();
+      if (Array.isArray(data)) {
+        return data
+          .filter((e) => e && typeof e.text === 'string' && e.text.length >= 30 && e.text.length <= 200)
+          .map((e) => ({ text: e.text.trim(), author: (e.author || 'Unknown').trim() }));
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
 
-  return Array.isArray(data)
-    ? data
-        .filter(
-          (e) =>
-            e &&
-            typeof e.q === "string" &&
-            typeof e.a === "string" &&
-            e.q.length >= 30 &&
-            e.q.length <= 200
-        )
-        .map((e) => ({ text: e.q.trim(), author: e.a.trim() }))
-    : [];
+  // No live quotes available
+  return [];
 }
 
 async function ensureQuotePool() {
@@ -1021,7 +1044,8 @@ cleanupOldCache().finally(() => {
 
 // If requested, initialize the lightweight WebGL renderer (non-blocking)
 try {
-  if (USE_WEBGL && window.WGWebGL && WGWebGL.init) {
+  // Do NOT initialize WebGL when running inside detected Lively lightweight host
+  if (USE_WEBGL && !LIGHTWEIGHT_MODE && window.WGWebGL && WGWebGL.init) {
     const container = document.getElementById('webglContainer');
     const ok = WGWebGL.init(container);
     if (ok) {
