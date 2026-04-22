@@ -39,6 +39,32 @@ if (LIGHTWEIGHT_MODE) {
   var PROCESS_CONCURRENCY = 0;
 }
 
+// Safety caps
+const MAX_PARALLEL_FETCHES = LIGHTWEIGHT_MODE ? 2 : 6;
+const MAX_CANVAS_PIXELS = LIGHTWEIGHT_MODE ? 800 * 450 : 1280 * 720; // cap total pixels drawn during processing
+
+// Simple fetch semaphore to limit concurrent network requests
+let _wgActiveFetches = 0;
+const _wgFetchQueue = [];
+function limitedFetch(input, init) {
+  return new Promise((resolve, reject) => {
+    const run = () => {
+      _wgActiveFetches += 1;
+      fetch(input, init)
+        .then((r) => resolve(r))
+        .catch((e) => reject(e))
+        .finally(() => {
+          _wgActiveFetches -= 1;
+          const next = _wgFetchQueue.shift();
+          if (next) next();
+        });
+    };
+
+    if (_wgActiveFetches < MAX_PARALLEL_FETCHES) run();
+    else _wgFetchQueue.push(run);
+  });
+}
+
 // WebGL runtime safety: disable WebGL renderer after repeated failures
 const WG_WEBGL_ERROR_MAX = 3;
 let _wgWebglErrorCount = 0;
@@ -119,7 +145,7 @@ async function cacheImageRemote(url) {
     const work = async () => {
       try {
         const cache = await caches.open(CACHE_NAME);
-        const resp = await fetch(url, { mode: 'cors', cache: 'no-store' });
+        const resp = await limitedFetch(url, { mode: 'cors', cache: 'no-store' });
         if (!resp.ok) return resolve(false);
         await cache.put(url, resp.clone());
         const manifest = loadCacheManifest();
@@ -417,7 +443,7 @@ async function processAndCropImage(url, targetW, targetH, quality = 0.86) {
     // Fallback: main-thread processing (existing path)
     let resp;
     try {
-      resp = await fetch(url, { mode: 'cors', cache: 'no-store' });
+      resp = await limitedFetch(url, { mode: 'cors', cache: 'no-store' });
       if (!resp || !resp.ok) return null;
     } catch {
       return null;
@@ -486,6 +512,23 @@ async function processAndCropImage(url, targetW, targetH, quality = 0.86) {
   }
 }
 
+  // Pause heavy work when hidden to avoid host freezes; resume when visible
+  document.addEventListener('visibilitychange', () => {
+    try {
+      if (document.hidden) {
+        // stop auto-rotation and heavy processing
+        if (refreshTimer) clearTimeout(refreshTimer);
+        // hide webgl if active
+        if (window.WGWebGL && WGWebGL.dispose) {
+          try { WGWebGL.dispose(); } catch {}
+        }
+      } else {
+        // resume auto-rotation
+        scheduleAutoRefresh();
+      }
+    } catch {}
+  });
+
 function preloadFontCSS(font) {
   if (!font) return Promise.resolve();
   return new Promise((resolve) => {
@@ -530,7 +573,7 @@ function pickRandomPage() {
 
 async function fetchImageBatch() {
   const page = pickRandomPage();
-  const response = await fetch(
+  const response = await limitedFetch(
     `https://picsum.photos/v2/list?page=${page}&limit=${IMAGE_BATCH_SIZE}`
   );
 
