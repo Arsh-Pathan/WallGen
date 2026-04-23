@@ -42,8 +42,5 @@ WallGen is a web-based live wallpaper designed to run in a browser or inside the
   - The runtime disables WebGL after three consecutive render errors — refresh the wallpaper in Lively to reset.
   - To avoid host pressure, disable cropping or caching by changing `PROCESS_CONCURRENCY` or commenting out `cacheImageRemote()` calls in `app.js` (developer option).
 
-**Developer notes**
-- The app uses async `createImageBitmap` and `OffscreenCanvas` (where available) for center-cropping. It tracks and prunes `blob:` URLs to limit memory usage. Heavy work is scheduled during idle where supported.
-
 **License**
 - MIT — modify and redistribute. See the repository for license details.
